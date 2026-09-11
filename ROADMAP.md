@@ -6,9 +6,7 @@
 现状:已会数据结构 + OS 基础,Web 方向是空白。
 节奏:每天 1-2 小时,总计约 6-9 周。原则 = 动手到哪学到哪,别先囤知识。
 
-贯穿全程的规矩:
-- 每个阶段结束 git commit 一次,写清 commit message
-- 让 AI 讲思路和逐行解释,别让它直接甩整个功能
+
 
 ---
 
@@ -37,6 +35,8 @@
 
 ## P1 数据采集:调 GitHub API(约 1 周)
 目标:能批量把 repo 数据拉到本地。
+(先记一条:这里拉的是"候选池"——之后所有推荐都只从这个池子里挑,
+GitHub 上亿 repo 不必全拉,池子从 1000 慢慢扩到上万就够用。)
 
 要知道(必懂):
 - HTTP:GET、请求头(Accept / Authorization)、状态码(200/403/429)、JSON
@@ -45,7 +45,7 @@
 - Python:requests 库、for 循环、try/except、json.dump、time.sleep
 
 产出:
-- fetch_repos.py:按语言关键词拉 repo 列表,存原始 JSON 到 data/raw/
+- fetch_repos.py:按语言关键词拉 repo 列表(=你的候选池),存原始 JSON 到 data/raw/
   每个 repo 至少留:id, full_name, description, language, topics,
   stargazers_count, pushed_at, html_url
 - 脚本要能断点续跑(记录已拉到的页,避免重拉撞限流)
@@ -57,6 +57,9 @@
 坑:
 - 403 rate limit 和 403 forbidden 不一样,先看响应体里的说明
 - 别并发狂拉,先单线程睡 0.5s
+- 别动"干脆下载现成全量数据库"的念头:GHTorrent / libraries.io 快照
+  动辄几个 GB、数据还旧,而这步真正要学的是 HTTP/分页/限流;
+  扩池子 = search API 多翻几页,不用去啃全量数据
 
 ---
 
@@ -194,6 +197,9 @@
 - 数据来源(真实他人行为):
   a) 采样 N 千个高 star 用户的公开 star 列表(GitHub API,注意限流)
   b) GH Archive 公开事件流(数据巨大,先下某一天子集练手)
+  (别指望现成数据集偷懒:libraries.io 快照已确认不含用户级行为,
+   只有每 repo 汇总的 star 数,喂不了协同过滤;GHTorrent 够全但要
+   自己导几天。老老实实用 a) 或 b) 采子集最划算)
 - 矩阵稀疏问题、冷启动(新 repo 没人碰过 → 退回 P6)
 
 产出:

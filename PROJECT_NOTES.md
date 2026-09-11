@@ -30,7 +30,9 @@
   近 24h star 增量做增速榜,或解析 github.com/trending 页面。
 - repo 元数据用 GitHub REST API(search 接口,分页,认证后限流 5000/时)。
 - 协同过滤的"他人行为"数据:采样高 star 用户的公开 star 列表,
-  或 GH Archive 子集。libraries.io 数据集是备选。
+  或 GH Archive 子集。libraries.io 数据集已核实不含用户级行为
+  (只有每 repo 汇总的 star 数,官方文档明说不含个人行为信息),
+  做不了协同过滤,已从备选中撤掉。
 - 用户自己的口味信号:OAuth 后拉 /user/starred 最干净;
   单用户项目可简化:脚本定期拉自己的 star 列表即可,不一定要埋点。
 

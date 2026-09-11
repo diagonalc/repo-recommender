@@ -1,0 +1,18 @@
+# 虚拟环境
+.venv/
+venv/
+
+# 拉下来的数据(原始 JSON,大文件,不入库)
+data/
+
+# token / 密钥 —— 永远别提交
+.env
+token.txt
+*.token
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# Windows 访问 WSL 文件时留下的垃圾文件
+*:Zone.Identifier
