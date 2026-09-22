@@ -25,9 +25,12 @@ TOKEN = os.environ.get("GITHUB_TOKEN")  # 从环境变量读,绝不写死在代�
 KEEP_FIELDS = ["id", "full_name", "description", "language",
                "topics", "stargazers_count", "pushed_at", "html_url"]
 
-REQUEST_GAP = 2.0   # 每次请求之间睡多久(秒),防止撞限流
-MAX_RETRIES = 3     # 撞限流后最多重试几次
-MAX_WAIT = 60       # 单次等待上限(秒),别让脚本睡死
+# 每次请求之间睡多久(秒)—— 这个值是被"限流"直接决定的:
+#   认证后 search 接口 ≈30 次/分钟 → 睡 2 秒足够(12 次请求远用不完)
+#   未认证只有 10 次/分钟       → 必须睡 ≥7 秒,否则 2 秒发一个 = 30 次/分钟,必撞
+REQUEST_GAP = 2.0 if TOKEN else 7.0
+MAX_RETRIES = 4     # 撞限流后最多重试几次
+MAX_WAIT = 120      # 单次等待上限(秒),别让脚本睡死
 
 
 def build_params(lang, page):
@@ -50,14 +53,21 @@ def _message(resp):
 
 
 def wait_seconds(resp):
-    """撞限流了,算该等多少秒。优先用 Retry-After,其次看额度重置时间。"""
+    """撞限流了,算该等多少秒。
+
+    两种限流要区别对待(这是这次踩坑学到的):
+      - secondary rate limit(响应头有 Retry-After):GitHub 的原话是
+        "wait a few minutes",所以它给的秒数要当下限,不能睡 2 秒就冲
+      - primary rate limit(额度真用完,剩余=0):等额度窗口重置
+        (X-RateLimit-Reset 是"重置时刻",减现在 = 还要等多久)
+    """
     retry_after = resp.headers.get("Retry-After")
     if retry_after:
-        return min(int(retry_after), MAX_WAIT)
+        return min(max(int(retry_after), 30), MAX_WAIT)      # 二级限流至少等 30s
     reset = resp.headers.get("X-RateLimit-Reset")
     if reset:
-        return min(max(int(reset) - int(time.time()), 1), MAX_WAIT)
-    return 5
+        return min(max(int(reset) - int(time.time()), 5), MAX_WAIT)
+    return 30
 
 
 def fetch_page(lang, page):

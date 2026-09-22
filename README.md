@@ -23,3 +23,11 @@ Record users' behaviour and suggest repositories to users.
 - 卡点:typescript 第 1、2 页重复了 2 个 repo(拉页之间等了 2 分钟,星标排序的榜单在动,分页本身不稳定)。被 UNIQUE(full_name) 挡住,1200 条原始记录 → 1198 行。
 - 结果:schema.sql + db.py + load_raw.py;repos 表 1198 行,重复跑行数不变(幂等)。
 - 下一步:P3 增量快照 + trending 榜。
+
+### P3 增量快照 + trending 榜 —— 代码完成,等第二份快照(验收要连续两天)
+- 学会:快照表为什么单独建(repos 的 star 数每天被覆盖,不留历史就算不出增量)、主键 (repo_id, snapshot_date) 怎么天然防重复、SQL 自连接(同一张表当 cur/prev 用,相减得 delta)、heapq.nlargest 取 Top-K、cron 定时任务、一级限流(额度用完)和二级限流(scraping/abuse)的区别与各自退避策略。
+- 学会(接口取舍):刷新元数据用 search 重拉(12 次请求),不是逐个 repo 查详情(1193 次)——用量差 100 倍,代价是掉出榜单的 repo 不再被刷新。
+- 卡点:未认证限流比 P1 那次更凶,12 次请求被 403 secondary rate limit 反复拦,靠退避(22s/31s/41s/59s)才全部拉回,单轮耗时明显变长。教训:REQUEST_GAP 是被限流额度直接决定的(未认证 10 次/分 → 必须睡 ≥7 秒),已改成按有无 token 自适应;并补了"单个语言失败不拖垮整轮"的容错——定时任务不能因为一个环节崩掉,整天没快照。
+- 结果:schema.sql 加 repo_snapshots 表;daily_update.py(拉数据 → upsert repos → 写当天快照);trending.py(自连接算 delta + heapq 取 Top-N)。2026-09-22 第一份快照 1193 行已入库;cron 已配(每天 10:17 本地时间)。
+- 待办:P4 同步自己的 star 历史。等 2026-09-23 cron 跑出第二份快照,trending.py 才有真榜可比。
+- 注意:WSL 不启动时 cron 不会跑;哪天没跑,trending 会自动拿"最近两个有数据的日期"比,跨度可能变成 2 天。

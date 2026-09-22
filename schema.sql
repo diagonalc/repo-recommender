@@ -17,3 +17,18 @@ CREATE TABLE IF NOT EXISTS repos (
 -- 索引:让"按 star 排序""按语言筛选"不必全表扫描(数据上万后差别明显)
 CREATE INDEX IF NOT EXISTS idx_repos_stars    ON repos(stargazers_count DESC);
 CREATE INDEX IF NOT EXISTS idx_repos_language ON repos(language);
+
+
+-- ============ P3:每日 star 快照 ============
+-- repos 存的是"此刻"的 star 数(每次更新被覆盖);
+-- 想算"涨了多少"就必须把历史留档 —— 这张表一个 repo 一天记一行,只增不改。
+CREATE TABLE IF NOT EXISTS repo_snapshots (
+    repo_id           INTEGER NOT NULL,    -- 指向 repos.id
+    snapshot_date     TEXT    NOT NULL,    -- UTC 日期 'YYYY-MM-DD'(只到"天",一天一份)
+    stargazers_count  INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, snapshot_date),  -- 同一 repo 同一天只有一行 → 当天重跑 = 覆盖,不产生重复
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+
+-- 算榜时要"取最近两个日期",按日期查,给它建索引
+CREATE INDEX IF NOT EXISTS idx_snapshots_date ON repo_snapshots(snapshot_date);

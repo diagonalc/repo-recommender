@@ -38,6 +38,15 @@ ON CONFLICT(full_name) DO UPDATE SET
 # 会直接抛 IntegrityError,这正是我们想要的——静默吞掉才危险。
 
 
+# P3:快照的 upsert。同一个 repo 同一天再写一次 = 覆盖当天的值(所以当天重跑是安全的)
+SNAPSHOT_SQL = """
+INSERT INTO repo_snapshots (repo_id, snapshot_date, stargazers_count)
+VALUES (?, ?, ?)
+ON CONFLICT(repo_id, snapshot_date) DO UPDATE SET
+    stargazers_count = excluded.stargazers_count
+"""
+
+
 def to_utc_iso(value):
     """把各种 ISO8601 时间统一成 UTC 的 ...Z 形式;空的/解析不了的返回 None。"""
     if not value:
@@ -95,8 +104,36 @@ def count_repos(conn):
     return conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
 
 
+def today_utc():
+    """今天的 UTC 日期,格式 'YYYY-MM-DD'。
+    全项目只用 UTC 一套口径 —— 别让"今天"在本地时区和 UTC 之间来回横跳。"""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def save_snapshots(conn, repos, snapshot_date):
+    """给这批 repo 写指定日期的 star 快照。返回实际写入的行数。"""
+    rows = [(r.get("id"), snapshot_date, r.get("stargazers_count") or 0)
+            for r in repos if r.get("id")]
+    before = conn.total_changes
+    conn.executemany(SNAPSHOT_SQL, rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+def snapshot_dates(conn):
+    """库里出现过的快照日期,从新到旧。trending.py 靠它拿"最近的两个日期"。"""
+    cur = conn.execute(
+        "SELECT DISTINCT snapshot_date FROM repo_snapshots ORDER BY snapshot_date DESC")
+    return [row[0] for row in cur]
+
+
+def count_snapshots(conn):
+    return conn.execute("SELECT COUNT(*) FROM repo_snapshots").fetchone()[0]
+
+
 if __name__ == "__main__":
     c = get_conn()
     init_db(c)
     print(f"数据库:{DB_PATH}")
     print(f"repos 表现有 {count_repos(c)} 行")
+    print(f"repo_snapshots 表现有 {count_snapshots(c)} 行")

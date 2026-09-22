@@ -14,5 +14,8 @@ token.txt
 __pycache__/
 *.pyc
 
+# 定时任务的运行日志
+logs/
+
 # Windows 访问 WSL 文件时留下的垃圾文件
 *:Zone.Identifier
