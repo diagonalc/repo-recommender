@@ -2,7 +2,8 @@
 """P3:每日增量更新 —— 刷新 repo 元数据 + 记一份当天的 star 快照。
 
 用法:
-    python3 daily_update.py
+    python3 daily_update.py              # 正常:联网拉最新数据
+    python3 daily_update.py --from-raw   # 不联网:用 data/raw 里上次拉下来的数据
 
 每天跑一次,做三件事:
     1. 重跑 P1 那 12 个 search 查询,拿到"现在"的 repo 数据(只要 12 次请求,
@@ -17,6 +18,10 @@
     一次给 100 个。用量差 100 倍 —— 这就是"选对接口"的价值。
     代价:search 返回的是当前榜单,冷门 repo 可能掉出前 100 就不再被刷新。
 """
+import glob
+import json
+import os
+import sys
 import time
 
 from db import (count_repos, count_snapshots, get_conn, init_db,
@@ -24,6 +29,24 @@ from db import (count_repos, count_snapshots, get_conn, init_db,
 # 复用 P1 的取数逻辑:别复制粘贴,直接 import 那几个函数
 from fetch_repos import (LANGUAGES, PAGES_PER_LANG, REQUEST_GAP, fetch_page,
                          save_page)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
+
+
+def load_raw_repos():
+    """不联网:直接读 data/raw/*.json(上一次拉下来的原始数据)。
+
+    用途:重试时没必要为同一批数据再打一遍 GitHub ——
+    未认证只有 10 次/分,这点额度很贵(今天就是被它磨了十分钟)。
+    """
+    seen = {}
+    for path in sorted(glob.glob(os.path.join(RAW_DIR, "*.json"))):
+        with open(path, encoding="utf-8") as f:
+            for r in json.load(f):
+                if r.get("full_name"):
+                    seen[r["full_name"]] = r
+    return list(seen.values())
 
 
 def collect_repos():
@@ -58,11 +81,17 @@ def collect_repos():
 
 
 def main():
+    from_raw = "--from-raw" in sys.argv    # 加了它就跳过联网,用 data/raw 现成的数据
+
     day = today_utc()
     print(f"=== daily_update:{day}(UTC)===")
 
-    repos = collect_repos()
-    print(f"拉到 {len(repos)} 个 repo(已去重)")
+    if from_raw:
+        repos = load_raw_repos()
+        print(f"(--from-raw)从 data/raw 读了 {len(repos)} 个 repo,不联网")
+    else:
+        repos = collect_repos()
+        print(f"拉到 {len(repos)} 个 repo(已去重)")
 
     conn = get_conn()
     init_db(conn)

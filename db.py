@@ -23,7 +23,8 @@ COLUMNS = ["id", "full_name", "description", "language",
 UPSERT_SQL = f"""
 INSERT INTO repos ({", ".join(COLUMNS)})
 VALUES ({", ".join(["?"] * len(COLUMNS))})
-ON CONFLICT(full_name) DO UPDATE SET
+ON CONFLICT(id) DO UPDATE SET
+    full_name        = excluded.full_name,
     description      = excluded.description,
     language         = excluded.language,
     topics           = excluded.topics,
@@ -32,10 +33,17 @@ ON CONFLICT(full_name) DO UPDATE SET
     html_url         = excluded.html_url,
     fetched_at       = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 """
-# excluded = "这次想插进去的那一行"。所以冲突时 = 用新数据覆盖旧数据,
-# 但 id / full_name(主键和身份)不动 —— 行的身份保持稳定,P3 的快照才能挂在它上面。
-# 注意:ON CONFLICT(full_name) 只管 full_name 这个约束;万一 id 撞了(几乎不可能),
-# 会直接抛 IntegrityError,这正是我们想要的——静默吞掉才危险。
+# excluded = "这次想插进去的那一行"。所以冲突时 = 用新数据覆盖旧数据。
+#
+# 冲突目标选 id,而不是 full_name —— 这是实跑六天后被真实数据打脸改的:
+#   repo 会改名、换 owner。这时 id 不变、full_name 变了。若按 full_name 判断冲突,
+#   库里那行(id 相同、旧名字)和新数据(id 相同、新名字)会被当成两行,
+#   插入时撞上 id 主键约束 → IntegrityError,整批数据一行都写不进去。
+# 所以定下来:id 是身份(它永不变,所以拿它当主键),full_name 只是普通字段,跟着更新。
+# 这也是当初把 id 设成主键、让快照挂在 repo_id 上的回报 —— 改名不断历史。
+#
+# 另一面:若新数据的 full_name 撞上了"另一个 id"的行(旧 repo 被删、名字被别人抢走),
+# 仍然会抛 IntegrityError —— 这种真异常就该炸出来,别静默吞。
 
 
 # P3:快照的 upsert。同一个 repo 同一天再写一次 = 覆盖当天的值(所以当天重跑是安全的)

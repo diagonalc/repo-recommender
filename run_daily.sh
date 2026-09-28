@@ -10,7 +10,8 @@ set -u
 cd /home/diagonalc/repo-recommender || exit 1
 mkdir -p logs
 
-/usr/bin/python3 daily_update.py >> logs/daily.log 2>&1
+# -u = 不缓冲输出。定时任务失败时,日志里能看到它跑到哪一步才断 —— 否则一片空白
+/usr/bin/python3 -u daily_update.py >> logs/daily.log 2>&1
 code=$?
 
 echo "--- exit=$code $(date -u +%FT%TZ) ---" >> logs/daily.log
