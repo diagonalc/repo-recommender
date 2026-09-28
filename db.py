@@ -92,11 +92,60 @@ def get_conn():
     return conn
 
 
+def _migrate_events(conn):
+    """把老的 events 表升级到允许 'neutral'。
+
+    为什么要重建表:SQLite 不支持修改已有的 CHECK 约束,只能
+    "改名 → 建新表 → 搬数据 → 删旧表"。这是它改约束的标准做法。
+
+    只在检测到旧约束时才动,正常情况一行都不改。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
+    if not row or not row["sql"] or "neutral" in row["sql"]:
+        return
+
+    conn.executescript("""
+        ALTER TABLE events RENAME TO events_old;
+        CREATE TABLE events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_id     INTEGER NOT NULL,
+            action      TEXT NOT NULL
+                        CHECK (action IN ('interested','not_interested','neutral')),
+            created_at  TEXT NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            FOREIGN KEY (repo_id) REFERENCES repos(id)
+        );
+        INSERT INTO events (id, repo_id, action, created_at)
+            SELECT id, repo_id, action, created_at FROM events_old;
+        DROP TABLE events_old;
+        CREATE INDEX IF NOT EXISTS idx_events_repo   ON events(repo_id);
+        CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);
+    """)
+    conn.commit()
+    print("[migrate] events 表已重建,现在支持 neutral(取消表态)")
+
+
+def _migrate_comments_add_author(conn):
+    """给老的 comments 表补上 author 列。
+
+    SQLite 支持直接 ADD COLUMN(和改 CHECK 约束不一样,不用重建表)。
+    只在缺这列的时候才动。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+    if not cols or "author" in cols:
+        return
+    conn.execute("ALTER TABLE comments ADD COLUMN author TEXT")
+    conn.commit()
+    print("[migrate] comments 表已加上 author 列")
+
+
 def init_db(conn):
     """建表(已经建过就什么都不做 —— schema.sql 里全是 IF NOT EXISTS)。"""
     with open(SCHEMA_PATH, encoding="utf-8") as f:
         conn.executescript(f.read())
     conn.commit()
+    _migrate_events(conn)
+    _migrate_comments_add_author(conn)
 
 
 def upsert_repos(conn, repos):
@@ -151,7 +200,8 @@ ON CONFLICT(repo_id) DO UPDATE SET
 
 # events 是"流水表":只追加,永远不更新、不覆盖
 EVENT_SQL = "INSERT INTO events (repo_id, action) VALUES (?, ?)"
-EVENT_ACTIONS = ("interested", "not_interested")
+# neutral = 取消表态:不是"不喜欢",而是"把之前的标记撤回"
+EVENT_ACTIONS = ("interested", "not_interested", "neutral")
 
 
 def save_starred(conn, items):
@@ -374,6 +424,91 @@ def auto_tags_for(conn, repo_ids):
 
 def count_auto_tags(conn):
     return conn.execute("SELECT COUNT(*) AS n FROM auto_tags").fetchone()["n"]
+
+
+# ---------------- 详情页的笔记 ----------------
+
+def add_comment(conn, repo_id, body, author=None):
+    conn.execute("INSERT INTO comments (repo_id, author, body) VALUES (?, ?, ?)",
+                 (repo_id, author, body))
+    conn.commit()
+
+
+def list_comments(conn, repo_id, limit=200):
+    """某个 repo 的评论,新的在前。"""
+    return conn.execute(
+        "SELECT id, author, body, created_at FROM comments WHERE repo_id = ? "
+        "ORDER BY id DESC LIMIT ?", (repo_id, limit)).fetchall()
+
+
+def count_comments(conn):
+    return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
+
+
+# ---------------- 关注的开发者 ----------------
+
+FOLLOWING_SQL = """
+INSERT INTO following (login, name, avatar_url, html_url)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(login) DO UPDATE SET
+    name       = excluded.name,
+    avatar_url = excluded.avatar_url,
+    html_url   = excluded.html_url
+"""
+
+
+def save_following(conn, users):
+    """users = GitHub /user/following 的返回。返回写入行数。"""
+    rows = [(u.get("login"), u.get("name"), u.get("avatar_url"), u.get("html_url"))
+            for u in users if u.get("login")]
+    before = conn.total_changes
+    conn.executemany(FOLLOWING_SQL, rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+# 关注列表的排序方式。注意 "关注时间" 用的是 first_seen ——
+# GitHub 的接口**不返回真实的关注时间**,所以只能用它当近似:
+# 它记录的是"我们第一次同步到这个人"的时刻,所以对开始同步之后才关注的人才有意义。
+FOLLOWING_SORTS = {
+    "recent": "first_seen DESC, login COLLATE NOCASE",
+    "oldest": "first_seen ASC, login COLLATE NOCASE",
+    "name":   "login COLLATE NOCASE ASC",
+}
+
+
+def list_following(conn, limit=500, sort="name", q=None):
+    """关注的人。支持按名字/关注时间排序,以及按关键词过滤。"""
+    order = FOLLOWING_SORTS.get(sort, FOLLOWING_SORTS["name"])
+
+    where, params = "", []
+    if q:
+        like = f"%{q}%"
+        where = "WHERE login LIKE ? OR IFNULL(name, '') LIKE ?"
+        params = [like, like]
+
+    sql = (f"SELECT login, name, avatar_url, html_url, first_seen FROM following "
+           f"{where} ORDER BY {order} LIMIT ?")
+    params.append(limit)
+    return conn.execute(sql, tuple(params)).fetchall()
+
+
+def count_following(conn):
+    return conn.execute("SELECT COUNT(*) AS n FROM following").fetchone()["n"]
+
+
+def comment_counts(conn, repo_ids):
+    """{repo_id: 条数} —— 列表里每条都要显示评论数,一次查完。
+
+    别在循环里一条条查:那样 30 条就是 30 次查询。
+    """
+    repo_ids = [r for r in repo_ids if r]
+    if not repo_ids:
+        return {}
+    marks = ",".join("?" * len(repo_ids))
+    return {row["repo_id"]: row["n"] for row in conn.execute(
+        f"SELECT repo_id, COUNT(*) AS n FROM comments "
+        f"WHERE repo_id IN ({marks}) GROUP BY repo_id", tuple(repo_ids))}
 
 
 def repos_without_topics(conn):

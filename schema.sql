@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS starred (
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- 事件流:同一个人可以对同一个 repo 反复表态
     repo_id     INTEGER NOT NULL,
-    action      TEXT    NOT NULL CHECK (action IN ('interested','not_interested')),
+    -- neutral = "取消表态"(把之前的表态撤回)。有它才能表达"我不想再标记这个 repo 了",
+    -- 否则"取消不感兴趣"无处可写。旧库需要迁移,见 db.py 里的 _migrate_events()。
+    action      TEXT    NOT NULL CHECK (action IN ('interested','not_interested','neutral')),
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
@@ -87,4 +89,36 @@ CREATE TABLE IF NOT EXISTS auto_tags (
     tag      TEXT    NOT NULL,
     PRIMARY KEY (repo_id, tag),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+
+
+-- ============ 详情页的评论 ============
+-- 和 events 的区别:
+--   events   是结构化的表态(感兴趣 / 不感兴趣),有固定取值
+--   comments 是自由文本的评论
+-- 两个都是只追加的流水,不覆盖。
+--
+-- author 是为**以后多人用**留的:现在只有你自己,所以是空的;
+-- 等哪天别人也能评论,这一列就有地方写名字了。现在加,比以后改表省事。
+CREATE TABLE IF NOT EXISTS comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id     INTEGER NOT NULL,
+    author      TEXT,
+    body        TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_repo ON comments(repo_id);
+
+
+-- ============ 你关注的开发者 ============
+-- 和 starred 一样是"状态表":一个账号一行,重复同步只更新、不新增。
+-- 数据来自 GitHub 的 GET /user/following(读自己的关注列表不需要额外权限)。
+CREATE TABLE IF NOT EXISTS following (
+    login       TEXT PRIMARY KEY,   -- GitHub 用户名,天然唯一,直接当主键
+    name        TEXT,
+    avatar_url  TEXT,
+    html_url    TEXT,
+    first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );

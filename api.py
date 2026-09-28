@@ -9,6 +9,11 @@
 """
 import heapq
 import json
+import re
+import time
+from contextlib import asynccontextmanager
+
+import requests
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +21,17 @@ from pydantic import BaseModel
 
 import db
 
-app = FastAPI(title="Repo Recommender API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 启动时建表。schema.sql 里全是 IF NOT EXISTS,重复执行没副作用 ——
+    # 但不加这一步,新加的表(比如 comments)要等别的脚本跑过才存在,
+    # 直接调接口就会报"no such table"。
+    db.init_db(db.get_conn())
+    yield
+
+
+app = FastAPI(title="Repo Recommender API", version="0.1.0", lifespan=lifespan)
 
 # 前端(比如 127.0.0.1:5500)调后端(8000)算跨域,浏览器默认会拦掉。
 # 本地单用户项目,直接全放开最省事;真要上公网必须收紧成具体域名。
@@ -82,9 +97,13 @@ def attach_tags(conn, items):
 
 
 def attach_extras(conn, items):
-    """列表项要补的附加字段:介绍 + 合并后的标签。一处调用,免得漏。"""
+    """列表项要补的附加字段:介绍 + 合并后的标签 + 评论数。一处调用,免得漏。"""
     attach_intros(conn, items)
     attach_tags(conn, items)
+
+    counts = db.comment_counts(conn, [it["id"] for it in items if it.get("id")])
+    for it in items:
+        it["comment_count"] = counts.get(it.get("id"), 0)
 
 
 class EventIn(BaseModel):
@@ -138,7 +157,12 @@ def list_repos(sort: str = "stars", lang: str = None,
             items = [it for it in items
                      if all(x in (it.get("topics") or []) for x in tags)]
         top = heapq.nlargest(limit, items, key=lambda r: r["delta"])
-        attach_intros(conn, top)
+        # 增速查询里那列叫 stars(因为旁边还有 prev_stars),但其它接口和前端
+        # 统一用 stargazers_count。**差一个字段名,卡片上就显示成"★ ?"** ——
+        # 这类不一致特别难查:数据明明在,只是名字对不上。所以在出口处抹平。
+        for it in top:
+            it["stargazers_count"] = it.get("stars")
+        attach_extras(conn, top)          # 用 attach_extras,别只调 attach_intros —— 会漏字段
         return {"sort": "trending", "lang": lang, "tags": tags,
                 "since": dates[1], "as_of": dates[0],
                 "count": len(top), "items": top}
@@ -295,9 +319,90 @@ def repo_detail(full_name: str):
     out["starred_at"] = db.starred_at_of(conn, rid)
     out["opinion"] = db.latest_opinions(conn).get(rid)
     out["similar"] = _similar_items(conn, rid)
+    out["releases_url"] = (out.get("html_url") or "").rstrip("/") + "/releases"
+    # 笔记直接并进详情响应 —— 详情页一次请求拿齐,不用再发一次
+    out["comments"] = [dict(c) for c in db.list_comments(conn, rid)]
     attach_tags(conn, [out])          # 详情页的标签也要含自动补的
 
     return out
+
+
+class CommentIn(BaseModel):
+    body: str
+
+
+@app.post("/api/comments/{full_name:path}", status_code=201)
+def post_comment(full_name: str, c: CommentIn):
+    """给某个 repo 写一条笔记。
+
+    路径放在 /api/comments/ 而不是 /api/repos/... 下面:
+    /api/repos/{full_name:path} 的路径参数是**贪婪**的,会把后面的 /comments
+    一起当成仓库名吃掉。换个前缀,不用去赌路由注册顺序。
+
+    返回更新后的整份列表,前端拿到就能直接重渲染,不用再查一次。
+    """
+    body = (c.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="内容不能为空")
+    if len(body) > 2000:
+        raise HTTPException(status_code=422, detail="内容太长(上限 2000 字)")
+
+    conn = db.get_conn()
+    repo_id = db.find_repo_id(conn, full_name)
+    if repo_id is None:
+        raise HTTPException(status_code=404, detail=f"库里没有 {full_name}")
+
+    db.add_comment(conn, repo_id, body)
+    return {"ok": True, "full_name": full_name,
+            "items": [dict(r) for r in db.list_comments(conn, repo_id)]}
+
+
+@app.post("/api/star/{full_name:path}")
+def star_repo(full_name: str):
+    """真的去 GitHub 给这个 repo 点 star(不是本地标记)。
+
+    前提:token 要有 star 权限。只读 token 会被 GitHub 403 拒掉 ——
+    所以这里把 GitHub 的原话带出来,并说清该怎么办,
+    否则前端只能显示一句"失败",无从下手。
+    """
+    from fetch_repos import TOKEN
+
+    if not TOKEN:
+        raise HTTPException(status_code=409, detail="没配置 token,无法 star")
+
+    r = requests.put(
+        f"https://api.github.com/user/starred/{full_name}",
+        headers={"Authorization": f"token {TOKEN}",
+                 "Accept": "application/vnd.github+json",
+                 "Content-Length": "0"},
+        timeout=30)
+
+    if r.status_code == 204:
+        # 本地也记一笔,界面立刻能反映。以后跑 sync_stars 会用真实时间覆盖。
+        conn = db.get_conn()
+        repo_id = db.find_repo_id(conn, full_name)
+        if repo_id:
+            db.save_starred(conn, [{"repo": {"id": repo_id},
+                                    "starred_at": db.today_utc()}])
+        return {"ok": True, "full_name": full_name}
+
+    # 权限不足时 GitHub 回的是 404,不是 403 —— 它故意不说资源到底存不存在。
+    # 但它在响应头里写明这个接口需要什么 scope,用这个把两种情况分开。
+    # (实测过:我们的只读 token 会拿到 404 + x-accepted-oauth-scopes: 'public_repo, repo')
+    accepted = r.headers.get("x-accepted-oauth-scopes", "")
+    if r.status_code == 404 and accepted:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token 权限不足。GitHub 这个接口要求 {accepted} 权限,当前 token 没有。"
+                   "去 github.com/settings/tokens 加上 public_repo —— "
+                   "star 属于写操作,只读 token 读数据够用,但 star 不行")
+    if r.status_code == 403:
+        raise HTTPException(
+            status_code=403,
+            detail="GitHub 拒绝了这个请求(通常是权限不足或触发了限流)")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"GitHub 上找不到 {full_name}")
+    raise HTTPException(status_code=502, detail=f"GitHub 返回 {r.status_code}")
 
 
 @app.get("/api/me/starred")
@@ -336,6 +441,110 @@ def api_recommend(limit: int = 20, offset: int = 0):
         "has_more": len(items) == limit,      # 还有下一批可换
         "items": items,
     }
+
+
+@app.get("/api/me/following")
+def my_following(limit: int = 500, sort: str = "name", q: str = None):
+    """我关注的开发者,支持排序和搜索。
+
+    数据来自 GitHub 的 following 列表(由 sync_following.py 同步)——
+    是**真实数据**,不是从 star 推出来的。
+
+    sort=name    按用户名(默认)
+    sort=recent  按关注时间,新的在前
+    sort=oldest  按关注时间,旧的在前
+    """
+    conn = db.get_conn()
+    rows = db.list_following(conn, max(1, min(limit, 2000)), sort=sort, q=(q or "").strip() or None)
+    return {
+        "count": len(rows),
+        "sort": sort,
+        "q": q or "",
+        "items": [{
+            "login": r["login"],
+            "name": r["name"],
+            "html_url": r["html_url"] or f"https://github.com/{r['login']}",
+            "avatar_url": r["avatar_url"],
+            "first_seen": r["first_seen"],
+        } for r in rows],
+    }
+
+
+MYMEMORY = "https://api.mymemory.translated.net/get"
+MAX_CHUNK = 450      # MyMemory 匿名单次上限约 500 字节,留点余量
+MAX_TOTAL = 3000     # 再长就不翻了(README 我们本来就截到 2600)
+
+
+def _chunks(text, size=MAX_CHUNK):
+    """按句子边界切块。
+
+    别从句子中间硬切 —— 切在半个句子上,翻译出来就是断的,
+    拼回去读着很别扭。
+    """
+    out, buf = [], ""
+    for part in re.split(r"(?<=[.!?。!?;])\s*|\n+", text):
+        if not part:
+            continue
+        if len(buf) + len(part) + 1 <= size:
+            buf = (buf + " " + part).strip() if buf else part
+        else:
+            if buf:
+                out.append(buf)
+            while len(part) > size:      # 单句就超长,只能硬切
+                out.append(part[:size])
+                part = part[size:]
+            buf = part
+    if buf:
+        out.append(buf)
+    return out
+
+
+def _translate_one(text, src, tgt):
+    try:
+        r = requests.get(MYMEMORY, params={"q": text, "langpair": f"{src}|{tgt}"},
+                         timeout=20)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"连不上翻译服务:{e}")
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"翻译服务返回 {r.status_code}")
+    try:
+        out = (r.json().get("responseData") or {}).get("translatedText") or ""
+    except ValueError:
+        out = ""
+    if not out:
+        raise HTTPException(status_code=502, detail="翻译服务没有返回结果")
+    return out
+
+
+@app.get("/api/translate")
+def translate(text: str, to: str = "zh"):
+    """把一段文字翻成目标语言。
+
+    用的是 MyMemory 的公开接口:免费、不用申请 key(匿名有每日额度)。
+    这个功能是偶尔点一下,不值得为它去申请一个密钥。
+
+    长文本(比如整个 README)会**分块翻译再拼回去** ——
+    接口单次只收 500 字节左右,不分块就翻不了。
+    源语言靠粗略判断(有汉字就当中文),目标语言跟界面语言走。
+    """
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="没有要翻译的内容")
+    text = text[:MAX_TOTAL]
+
+    src = "zh-CN" if re.search(r"[一-鿿]", text) else "en"
+    tgt = "zh-CN" if (to or "zh").startswith("zh") else "en"
+    if src == tgt:
+        return {"translated": text, "same_language": True}
+
+    parts = _chunks(text)
+    out = []
+    for i, part in enumerate(parts):
+        out.append(_translate_one(part, src, tgt))
+        if i < len(parts) - 1:
+            time.sleep(0.25)     # 别把免费接口打爆
+    return {"translated": " ".join(out), "source": src, "target": tgt,
+            "chunks": len(parts)}
 
 
 @app.post("/api/events", status_code=201)

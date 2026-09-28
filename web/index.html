@@ -5,186 +5,362 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Repo Recommender</title>
 <style>
-  /* 配色直接抄 GitHub 深色主题,不自创 —— 少一件事要想 */
+  /* 视觉参照 Threads / X:纯黑底、窄栏内容、细线分隔、导航竖排在右侧。
+     导航可以折成只剩图标(窄屏自动折),内容区跟着让位。 */
+  /* 夜晚模式(默认)。白天模式在 body.light 里整组覆盖 —— 只换变量,
+     不去每个规则里写两遍颜色。 */
   :root {
-    --bg:      #0d1117;
-    --card:    #161b22;
-    --border:  #30363d;
-    --text:    #c9d1d9;
-    --muted:   #8b949e;
-    --accent:  #58a6ff;
-    --ok:      #3fb950;
-    --bad:     #f85149;
+    --bg:      #000000;
+    --text:    #f5f5f5;
+    --muted:   #8e8e8e;
+    --line:    rgba(255, 255, 255, 0.15);
+    --hover:   rgba(255, 255, 255, 0.06);
+    --fill:    rgba(255, 255, 255, 0.08);
+    --headbg:  rgba(0, 0, 0, 0.75);       /* 顶栏毛玻璃底色 */
+    --shadow:  rgba(0, 0, 0, 0.65);
+    --like:    #ff3040;
+    --accent:  #ffffff;                    /* 主按钮 / 选中态 */
+    --on-accent: #000000;                  /* 压在 accent 上的文字色 */
+    --rail-w:  56px;      /* 收起时只露图标;鼠标移上去自动展开 */
+    --radius:  999px;
+    color-scheme: dark;   /* 让浏览器把原生控件(下拉列表、滚动条)也渲染成深色 */
   }
+  body.light {
+    --bg:      #ffffff;
+    --text:    #0f1419;
+    --muted:   #536471;
+    --line:    rgba(0, 0, 0, 0.12);
+    --hover:   rgba(0, 0, 0, 0.04);
+    --fill:    rgba(0, 0, 0, 0.06);
+    --headbg:  rgba(255, 255, 255, 0.8);
+    --shadow:  rgba(0, 0, 0, 0.18);
+    --like:    #f91880;
+    --accent:  #0f1419;                    /* 浅底下,主色反过来用深色 */
+    --on-accent: #ffffff;                  /* 所以压在它上面的字要反过来变白 */
+    color-scheme: light;
+  }
+
   * { box-sizing: border-box; }
+  html, body { background: var(--bg); }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.6 -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif;
+    margin: 0; min-height: 100vh;
+    color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  header {
-    position: sticky; top: 0; z-index: 10;
-    background: var(--bg); border-bottom: 1px solid var(--border);
-    padding: 12px 20px; display: flex; align-items: center; gap: 20px;
-  }
-  h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  nav { display: flex; gap: 6px; }
-  .tab {
-    background: none; border: 1px solid transparent; color: var(--muted);
-    padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 14px;
-  }
-  .tab:hover { background: var(--card); color: var(--text); }
-  .tab.active { background: var(--card); border-color: var(--border); color: var(--text); }
+  a { color: inherit; }
 
-  main { max-width: 860px; margin: 0 auto; padding: 20px; }
-  .status { color: var(--muted); padding: 20px 0; }
+  /* ---------- 左侧竖导航 ---------- */
+  /* 默认只露图标,鼠标移上去自动展开。
+     展开是"浮层"(fixed + 高层级),**不挤内容** ——
+     否则鼠标一划过,正文就跟着左右跳一下,很难受。 */
+  .rail {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 30;
+    width: var(--rail-w); overflow: hidden;
+    background: var(--bg); border-right: 1px solid var(--line);
+    padding: 18px 10px; display: flex; flex-direction: column; gap: 4px;
+    transition: width .16s ease, box-shadow .16s ease;
+  }
+  /* 悬停展开的宽度也别太大 —— 太宽的话鼠标要拖很远才能离开、才会自动收回 */
+  .rail:hover { width: 176px; box-shadow: 10px 0 30px var(--shadow); }
+  /* 图标用固定的左内边距定位,不是居中 ——
+     居中(justify-content: center / margin:auto)在展开时会把图标推到栏中间,
+     正好撞上固定在左边的标签。固定左侧位置,图标展开前后都不动。 */
+  .rail-btn {
+    position: relative;
+    display: flex; align-items: center; justify-content: flex-start;
+    background: transparent; border: none; border-radius: var(--radius);
+    color: var(--text); padding: 11px 0 11px 7px; cursor: pointer;
+    font-size: 15px; text-align: left; width: 100%;
+    transition: background .12s;
+  }
+  .rail-btn:hover { background: var(--hover); }
+  .rail-btn.active { font-weight: 700; }
+  .rail-btn .ico { flex: 0 0 22px; width: 22px; height: 22px; }
+  .rail-btn .ico svg { width: 22px; height: 22px; display: block; }
+  /* 标签用绝对定位,不占布局宽度。
+     之前用 opacity: 0 隐藏 —— 它**仍然占宽度**,于是居中算的是"图标+隐形标签",
+     图标被挤出左边界裁掉了。折叠时看着就是歪的 / 缺一块。 */
+  .rail-label {
+    position: absolute; left: 41px; top: 50%; transform: translateY(-50%);
+    white-space: nowrap; opacity: 0; pointer-events: none;
+    transition: opacity .12s;
+  }
+  .rail:hover .rail-label { opacity: 1; }
+  .rail-spacer { flex: 1 1 auto; }
 
-  .card {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px; margin-bottom: 12px;
+  /* 窗口铺满屏幕(浏览器最大化)时,导航直接摊开、不用悬停 —— 空间有的是。
+     窗口不满屏时才收成图标、靠悬停展开。由 JS 按窗口宽度判断后加这个类。 */
+  body.rail-open .rail { width: 176px; }
+  body.rail-open .rail-label { opacity: 1; }
+
+  /* 站名 + 标记,固定在导航最上方 */
+  .rail-brand {
+    position: relative; display: flex; align-items: center;
+    background: transparent; border: none; color: var(--text);
+    padding: 4px 0 20px 4px; cursor: pointer; width: 100%; text-align: left;
   }
-  .card-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .name { color: var(--accent); text-decoration: none; font-size: 16px; font-weight: 600; }
-  .name:hover { text-decoration: underline; }
-  .reason { color: var(--muted); font-size: 12px; }
-  .desc { color: var(--muted); margin: 6px 0 10px; }
-  /* 介绍:来自 README 的那段,比 description 更具体,所以给正文色而不是灰字 */
-  .intro {
-    color: var(--text); background: #0d1117; border-left: 3px solid var(--border);
-    border-radius: 4px; padding: 8px 12px; margin: 0 0 10px; font-size: 13px;
+  .rail-brand .ico { flex: 0 0 28px; width: 28px; height: 28px; }
+  .rail-brand .ico svg { width: 28px; height: 28px; display: block; }
+  .rail-brand .rail-label { left: 44px; font-size: 16px; font-weight: 700; }
+
+  /* ---------- 内容区 ---------- */
+  .page { margin-left: var(--rail-w); min-width: 0; }
+  .pagehead {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--headbg);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--line);
   }
-  .intro-label { color: var(--muted); font-weight: 600; }
-  .meta { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-  .topics { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
-  .topic {
-    background: #1f6feb22; color: var(--accent); border: 1px solid #1f6feb55;
-    border-radius: 20px; padding: 1px 10px; font-size: 12px;
+  /* 页头是一行:[返回按钮(按需出现)] [标题] */
+  .headrow {
+    max-width: 660px; margin: 0 auto; padding: 14px 16px;
+    display: flex; align-items: center; gap: 8px;
   }
-  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .headrow h1 {
+    margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -0.015em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 返回按钮:在标题左边,箭头朝左 */
+  .pageback { margin-left: -8px; color: var(--text); flex: 0 0 auto; }
+  .pageback .ico { width: 22px; height: 22px; }
+  .pageback .ico svg { width: 22px; height: 22px; display: block; }
+  main { max-width: 660px; margin: 0 auto; padding: 4px 16px 80px; }
+  .status { color: var(--muted); font-size: 13px; padding: 14px 0; }
+  /* 空了就不占位。搜索页顶部本来会多出一条空行 ——
+     工具栏是空的但带着 padding,状态行写着"加载中"还没被清掉。 */
+  .toolbar:empty, .status:empty { display: none; }
+
+  /* ---------- 控件 ---------- */
+  /* 胶囊按钮。内边距和 .sel-btn 保持一致 ——
+     两个并排时高度差一点点,看着就是不齐。 */
   .btn {
-    background: #21262d; border: 1px solid var(--border); color: var(--text);
-    padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: transparent; border: 1px solid var(--line); border-radius: var(--radius);
+    color: var(--text); padding: 9px 15px; font-size: 13px; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+    transition: background .12s, border-color .12s;
   }
-  .btn:hover { border-color: var(--muted); }
-  .btn.ok:hover  { border-color: var(--ok);  color: var(--ok); }
-  .btn.bad:hover { border-color: var(--bad); color: var(--bad); }
-  /* 已选中的那个按钮 —— 按钮不禁用,随时可以改点另一个 */
-  .btn.ok.chosen  { border-color: var(--ok);  color: var(--ok);  background: #3fb95018; }
-  .btn.bad.chosen { border-color: var(--bad); color: var(--bad); background: #f8514918; }
-  .vote-note { color: var(--muted); font-size: 12px; align-self: center; }
-  .delta { color: var(--ok); font-weight: 600; }
+  .btn .ico { width: 15px; height: 15px; display: block; flex: 0 0 auto; }
+  .btn .ico svg { width: 15px; height: 15px; display: block; }
 
-  /* ---------- 详情页 ---------- */
-  .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 6px; }
-  .detail-title { font-size: 20px; margin: 0; }
-  .detail-desc { color: var(--muted); margin: 0 0 12px; }
-  .detail-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-  .btn.back { margin-bottom: 4px; }
-  .btn.gh { text-decoration: none; display: inline-block; }
-  .detail-intro {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 8px; padding: 14px; margin-top: 14px;
+  /* 图标按钮:只有图标,没有文字。状态靠颜色,不靠文字。 */
+  .icon-btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: transparent; border: none; border-radius: var(--radius);
+    color: var(--muted); padding: 6px 10px; cursor: pointer;
+    font-size: 13px; font-family: inherit;
+    transition: color .12s, background .12s;
   }
+  .icon-btn:hover { color: var(--text); background: var(--hover); }
+  .icon-btn .ico { width: 21px; height: 21px; flex: 0 0 auto; }
+  .icon-btn .ico svg { width: 21px; height: 21px; display: block; }
+  .icon-btn.on { color: var(--like); }
+  .icon-btn:disabled { opacity: .5; cursor: default; }
+  .btn:hover { background: var(--hover); border-color: var(--text); }
+  /* 文字色一定要跟着 accent 走 —— 写死 #000 的话,白天模式是深底黑字,直接看不见 */
+  .btn.primary {
+    background: var(--accent); color: var(--on-accent);
+    border-color: var(--accent); font-weight: 600;
+  }
+  .btn.primary:hover { opacity: .88; }
+
+  input[type="search"] {
+    background: var(--fill); border: 1px solid transparent; border-radius: var(--radius);
+    color: var(--text); padding: 9px 16px; font-size: 14px;
+  }
+  input[type="search"]::placeholder { color: var(--muted); }
+  input[type="search"]:focus { outline: none; border-color: var(--line); background: transparent; }
+
+  /* ---------- 自绘下拉 ----------
+     原生 <select> 展开后那一列是操作系统画的:圆角改不了,color-scheme 只能改颜色。
+     想要圆角就只能自己画一个。 */
+  .sel { position: relative; display: inline-block; }
+  .sel-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--fill); border: 1px solid transparent; border-radius: var(--radius);
+    color: var(--text); padding: 9px 14px; font-size: 13px; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+  }
+  .sel-btn:hover { border-color: var(--line); }
+  .sel-caret { color: var(--muted); font-size: 9px; }
+  .sel-menu {
+    display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+    min-width: 100%; padding: 5px;
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 14px;                  /* ← 就是要这个圆角 */
+    box-shadow: 0 10px 30px var(--shadow);
+  }
+  .sel.open .sel-menu { display: block; }
+  .sel-item {
+    padding: 8px 12px; border-radius: 9px; font-size: 13.5px;
+    color: var(--text); cursor: pointer; white-space: nowrap;
+  }
+  .sel-item:hover { background: var(--hover); }
+  .sel-item.on { font-weight: 700; }
+
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 0; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+
+  /* 标签胶囊 */
+  .chip, .topic {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 3px 11px; font-size: 12px; color: var(--muted); display: inline-block;
+  }
+  .chip { color: var(--text); cursor: pointer; }
+  .chip:hover { border-color: var(--text); }
+  .topic.clickable { cursor: pointer; }
+  .topic.clickable:hover { color: var(--text); border-color: var(--text); }
+  .topic.on, .chip.on {
+    background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+  }
+
+  /* ---------- 条目:头像左、内容右 ---------- */
+  .post {
+    position: relative;       /* "更多"按钮要绝对定位到右上角 */
+    display: flex; gap: 12px; padding: 14px 12px; margin: 0 -12px;
+    border-bottom: 1px solid var(--line); border-radius: 12px;
+    transition: background .12s;
+    cursor: pointer;          /* 整块可点进详情 */
+  }
+  .post:hover { background: var(--hover); }
+  .post-avatar { flex: 0 0 auto; }
+  .avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--fill); object-fit: cover; display: block;
+  }
+  .post-body { flex: 1 1 auto; min-width: 0; }
+  .post-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .name { font-size: 15px; font-weight: 600; text-decoration: none; cursor: pointer; }
+  .name:hover { text-decoration: underline; }
+  .post-head .muted { font-size: 12.5px; }
+  .desc { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+  .intro { margin: 4px 0 0; font-size: 14.5px; }
+  .desc, .intro {
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .topics { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+  .actions { display: flex; align-items: center; gap: 2px; margin-top: 9px; flex-wrap: wrap; }
+  .post.dim { opacity: .4; }
+  .reason { font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+  /* "更多"菜单:复用下拉面板那套(圆角 + 点外面收起) */
+  .sel.more .sel-menu { left: auto; right: 0; min-width: 170px; }
+  /* 列表卡片里钉在右上角 */
+  .sel.more.topright { position: absolute; top: 4px; right: 6px; }
+  .sel.more .sel-item { display: flex; align-items: center; gap: 9px; }
+  .sel.more .sel-item .ico { width: 16px; height: 16px; flex: 0 0 auto; color: var(--muted); }
+  .sel.more .sel-item .ico svg { width: 16px; height: 16px; display: block; }
+
+  /* ---------- 区块 ---------- */
+  .section { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 14px; }
   .section-title {
-    font-size: 12px; color: var(--muted); font-weight: 600;
-    letter-spacing: .06em; margin-bottom: 8px;
+    font-size: 12px; color: var(--muted); letter-spacing: .04em;
+    margin-bottom: 10px; text-transform: uppercase;
   }
-  /* README 正文:保留换行(pre-wrap),超长可滚动 */
+
+  /* ---------- 搜索页 ---------- */
+  .searchbar { display: flex; gap: 8px; padding: 14px 0 4px; }
+  .searchbar input[type="search"] { flex: 1 1 auto; min-width: 0; }
+  .author-grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  .author {
+    display: flex; align-items: center; gap: 8px; text-decoration: none;
+    font-size: 13.5px; color: var(--text);
+  }
+  .author .avatar { width: 28px; height: 28px; }
+  .author:hover { text-decoration: underline; }
+
+  /* 已关注:竖排列表 */
+  .follow-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; margin: 0 -12px; border-radius: 12px;
+    border-bottom: 1px solid var(--line);
+    text-decoration: none; color: var(--text);
+  }
+  .follow-row:hover { background: var(--hover); }
+  .follow-row .avatar { width: 44px; height: 44px; }
+  .follow-info { flex: 1 1 auto; min-width: 0; }
+  .follow-login { font-weight: 600; font-size: 15px; }
+  .follow-name { color: var(--muted); font-size: 13px; }
+  .follow-date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .follow-search { flex: 1 1 170px; min-width: 120px; }
+
+  /* 介绍右下角的翻译按钮 */
+  .intro-wrap { position: relative; }
+  .intro-wrap .intro { padding-right: 34px; }   /* 给按钮让位,别压住字 */
+  .intro-wrap .translate-btn { position: absolute; right: 0; bottom: -4px; padding: 2px 5px; }
+  .intro-wrap .translate-btn .ico { width: 16px; height: 16px; }
+  .intro-wrap .translate-btn .ico svg { width: 16px; height: 16px; display: block; }
+
+  /* ---------- 详情 ---------- */
+  .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 0 4px; }
+  .detail-head .avatar { width: 56px; height: 56px; }
+  /* 头像本身是链接:点了去作者主页 */
+  .avatar-link { display: inline-block; line-height: 0; border-radius: 50%; }
+  .avatar-link:hover .avatar { outline: 2px solid var(--muted); outline-offset: 2px; }
+  /* 详情页标题本身就是链接 */
+  a.detail-title { color: var(--text); text-decoration: none; }
+  a.detail-title:hover { text-decoration: underline; }
+
+  /* 区块标题行:左标题、右操作(比如 README 的翻译按钮) */
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 10px;
+  }
+  .section-head .section-title { margin-bottom: 0; }
+  .detail-title { font-size: 18px; margin: 0; font-weight: 700; }
+  .detail-desc { color: var(--muted); font-size: 13.5px; margin: 6px 0 0; }
+  .detail-meta { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-top: 8px; align-items: center; }
+  .owner { display: inline-flex; align-items: center; gap: 5px; }
+  .owner .avatar { width: 16px; height: 16px; }
+  .owner-link { color: var(--muted); text-decoration: none; }
+  .owner-link:hover { color: var(--text); text-decoration: underline; }
+  .delta { color: var(--text); }
   pre.readme {
     white-space: pre-wrap; word-break: break-word; margin: 0;
     font: 12.5px/1.7 ui-monospace, Consolas, "Noto Sans Mono CJK SC", monospace;
-    color: var(--text); max-height: 460px; overflow-y: auto;
+    max-height: 520px; overflow-y: auto;
   }
-  .muted { color: var(--muted); }
-  .chart { display: flex; align-items: flex-end; gap: 20px; height: 110px; padding-top: 8px; }
-  .chart-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .chart-bar { width: 26px; background: var(--accent); border-radius: 3px 3px 0 0; }
+  .chart { display: flex; align-items: flex-end; gap: 20px; height: 110px; }
+  .chart-col { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .chart-bar { width: 24px; background: var(--accent); border-radius: 4px 4px 0 0; }
   .chart-label { font-size: 11px; color: var(--muted); }
-  .similar-row { padding: 4px 0; }
+  .similar-row { padding: 5px 0; font-size: 13.5px; }
 
-  /* ---------- 作者头像 ---------- */
-  .avatar {
-    width: 22px; height: 22px; border-radius: 50%;
-    background: var(--border); object-fit: cover; flex: 0 0 auto;
+  /* ---------- 详情页的笔记 ---------- */
+  .comment-input {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    background: var(--fill); border: 1px solid transparent; border-radius: 14px;
+    color: var(--text); padding: 11px 14px; font: inherit; font-size: 14px;
   }
-  .detail-head .avatar { width: 40px; height: 40px; }
-  .owner-link { color: var(--muted); text-decoration: none; }
-  .owner-link:hover { color: var(--accent); text-decoration: underline; }
-
-  /* ---------- 工具栏:刷新 / 排序 / 当前筛选 ---------- */
-  /* 搜索框吃掉剩余空间,把后面的语言/刷新按钮推到最右 */
-  .search {
-    margin-left: auto; width: 300px; font-size: 13px;
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 10px; color: var(--text);
-  }
-  .search:focus { outline: none; border-color: var(--accent); }
-  .search::placeholder { color: var(--muted); }
-  .scope {
-    background: var(--card); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 6px; font-size: 12px; cursor: pointer;
-  }
-  .btn.batch { margin-right: 2px; }
-  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-  .toolbar label { font-size: 12px; color: var(--muted); }
-  .toolbar select {
-    background: var(--card); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer;
-  }
-  /* 当前生效的筛选条件,点 ✕ 取消 */
-  .chip {
-    background: #1f6feb22; color: var(--accent); border: 1px solid #1f6feb55;
-    border-radius: 20px; padding: 2px 10px; font-size: 12px; cursor: pointer;
-  }
-  .chip:hover { background: #1f6feb33; }
-  /* 文本块最多 4 行,超了打点省略 —— 有的 repo 描述/介绍长得离谱,
-     一张卡能撑满整屏,列表就没法扫了。数据层也截了,这里是第二道保险 */
-  .desc, .intro {
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  /* 作者(头像 + 名字) */
-  .owner { display: inline-flex; align-items: center; gap: 5px; }
-  .owner .avatar { width: 14px; height: 14px; }
-  .detail-meta .owner .avatar { width: 18px; height: 18px; }
-
-  /* 卡片上的标签可点:点了就看同标签的 repo */
-  .topic.clickable { cursor: pointer; }
-  .topic.clickable:hover { background: #1f6feb55; }
-  /* 已选中的标签:高亮,再点一下取消 */
-  .topic.on { background: #1f6feb66; border-color: var(--accent); color: #fff; }
-  .tagcloud { display: flex; flex-wrap: wrap; gap: 8px; }
-  .tagcloud .topic { cursor: pointer; font-size: 13px; padding: 3px 12px; }
-  .tagcloud .topic:hover { background: #1f6feb55; }
+  .comment-input::placeholder { color: var(--muted); }
+  .comment-input:focus { outline: none; border-color: var(--line); background: transparent; }
+  .comment-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .comment-list { margin-top: 16px; }
+  .comment { border-top: 1px solid var(--line); padding: 10px 0; }
+  .comment-meta { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .comment-body { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Repo Recommender</h1>
-  <nav>
-    <button class="tab active" data-tab="trending" data-i18n="tab_trending">Trending</button>
-    <button class="tab" data-tab="recommend" data-i18n="tab_recommend">推荐</button>
-    <button class="tab" data-tab="tags" data-i18n="tab_tags">标签</button>
-    <button class="tab" data-tab="starred" data-i18n="tab_starred">我的</button>
-  </nav>
-  <input id="search" class="search" type="search"
-         placeholder="搜索 repo:名字 / 描述 / 标签 / README">
-  <select id="scope" class="scope" title="搜索范围 / Search scope">
-    <option value="local">本地库</option>
-    <option value="github">全 GitHub</option>
-  </select>
-  <button id="lang" class="btn lang" title="切换语言 / Switch language">EN</button>
-  <button id="refresh" class="btn refresh" data-i18n="refresh">↻ 刷新</button>
-</header>
-<main>
-  <div id="toolbar" class="toolbar"></div>
-  <div id="status" class="status">加载中…</div>
-  <div id="detail" style="display:none"></div>
-  <div id="list"></div>
-</main>
+<div class="page">
+  <div class="pagehead">
+    <div class="headrow">
+      <button id="pageback" class="icon-btn pageback" style="display:none"></button>
+      <h1 id="pagetitle">Trending</h1>
+    </div>
+  </div>
+  <main>
+    <div id="toolbar" class="toolbar"></div>
+    <div id="status" class="status">加载中…</div>
+    <div id="detail" style="display:none"></div>
+    <div id="searchpage" style="display:none"></div>
+    <div id="list"></div>
+  </main>
+</div>
+
+<aside class="rail" id="rail"></aside>
+
 <script src="app.js"></script>
 </body>
 </html>

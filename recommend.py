@@ -122,12 +122,14 @@ def recommend_for(conn, n=20, offset=0):
     ids_top = [d["repo_id"] for d in top]
     readmes = db.readmes_for(conn, ids_top)
     auto = db.auto_tags_for(conn, ids_top)
+    ccount = db.comment_counts(conn, ids_top)
 
     for d in top:
         rid = d.pop("repo_id")
         d["intro"] = extract_intro(readmes.get(rid, ""),
                                    d.pop("_desc", None) or "",
                                    d["full_name"])
+        d["comment_count"] = ccount.get(rid, 0)
         # 自动补的标签也要并进来 —— 否则同一个 repo 在 Trending 页有标签、
         # 到推荐页就没标签了,同一个字段两处口径不一致最容易被当成 bug。
         merged = list(d.get("topics") or [])

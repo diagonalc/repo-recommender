@@ -19,3 +19,8 @@ logs/
 
 # Windows 访问 WSL 文件时留下的垃圾文件
 *:Zone.Identifier
+
+# 临时脚本(调试/验证用的,用完就删)
+# 这条是补的:_check_r8.py 有一次在我删掉它之前被提交了。
+# 让 .gitignore 兜住,别指望"我记得删"。
+_*.py
