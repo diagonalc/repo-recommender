@@ -139,6 +139,72 @@ def count_snapshots(conn):
     return conn.execute("SELECT COUNT(*) FROM repo_snapshots").fetchone()[0]
 
 
+# ---------------- P4:star 历史 + 行为事件 ----------------
+
+# starred 是"状态表":一个 repo 一行。重复同步 = 覆盖时间,不会长出第二行。
+STARRED_SQL = """
+INSERT INTO starred (repo_id, starred_at)
+VALUES (?, ?)
+ON CONFLICT(repo_id) DO UPDATE SET
+    starred_at = excluded.starred_at
+"""
+
+# events 是"流水表":只追加,永远不更新、不覆盖
+EVENT_SQL = "INSERT INTO events (repo_id, action) VALUES (?, ?)"
+EVENT_ACTIONS = ("interested", "not_interested")
+
+
+def save_starred(conn, items):
+    """items = /user/starred 的返回:[{"starred_at": ..., "repo": {...}}, ...]。
+
+    返回写入行数。starred_at 可能是 None(没带 star+json 头),照存不误。
+    """
+    rows = []
+    for it in items:
+        repo = it.get("repo") or {}
+        if repo.get("id"):
+            rows.append((repo["id"], to_utc_iso(it.get("starred_at"))))
+    before = conn.total_changes
+    conn.executemany(STARRED_SQL, rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+def count_starred(conn):
+    return conn.execute("SELECT COUNT(*) FROM starred").fetchone()[0]
+
+
+def recent_starred(conn, limit=10):
+    """按 star 时间倒序 —— 这就是"我记得我 star 过什么"的查询。"""
+    return conn.execute("""
+        SELECT r.full_name, r.language, r.stargazers_count, s.starred_at
+        FROM starred AS s
+        JOIN repos   AS r ON r.id = s.repo_id
+        ORDER BY s.starred_at DESC
+        LIMIT ?""", (limit,)).fetchall()
+
+
+def add_event(conn, repo_id, action):
+    """记一条反馈。action 只能是 interested / not_interested(和表上的 CHECK 一致)。"""
+    if action not in EVENT_ACTIONS:
+        raise ValueError(f"action 只能是 {EVENT_ACTIONS},收到 {action!r}")
+    conn.execute(EVENT_SQL, (repo_id, action))
+    conn.commit()
+
+
+def count_events(conn):
+    return conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
+
+def recent_events(conn, limit=10):
+    return conn.execute("""
+        SELECT e.id, e.action, e.created_at, r.full_name
+        FROM events AS e
+        LEFT JOIN repos AS r ON r.id = e.repo_id
+        ORDER BY e.id DESC
+        LIMIT ?""", (limit,)).fetchall()
+
+
 if __name__ == "__main__":
     c = get_conn()
     init_db(c)
