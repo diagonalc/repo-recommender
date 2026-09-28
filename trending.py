@@ -13,26 +13,11 @@
 import heapq
 import sys
 
-from db import get_conn, snapshot_dates
+from db import get_conn, growth_rows, snapshot_dates
 
 TOP_N = 30
 
-# cur = 最新那天,prev = 上一次那天。两个日期由 main() 查出来再传进去(? 占位)
-SQL = """
-SELECT r.full_name,
-       r.language,
-       r.html_url,
-       cur.stargazers_count                          AS stars,
-       prev.stargazers_count                         AS prev_stars,
-       cur.stargazers_count - prev.stargazers_count  AS delta
-FROM repo_snapshots AS cur
-JOIN repo_snapshots AS prev
-     ON prev.repo_id = cur.repo_id
-JOIN repos AS r
-     ON r.id = cur.repo_id
-WHERE cur.snapshot_date  = ?
-  AND prev.snapshot_date = ?
-"""
+# 增速那段 SQL 放在 db.py 里(api.py 也要用同一份,不能两处各写一份),这里只管算和打印
 
 
 def main():
@@ -47,7 +32,7 @@ def main():
         return
 
     cur_day, prev_day = dates[0], dates[1]      # 最新的两天
-    rows = conn.execute(SQL, (cur_day, prev_day)).fetchall()
+    rows = growth_rows(conn, cur_day, prev_day)
     print(f"对比 {prev_day} → {cur_day}(共 {len(rows)} 个 repo 有可比数据)\n")
 
     # Top-K 用堆:heapq.nlargest 是 O(n log k),只排序"要的那几个",

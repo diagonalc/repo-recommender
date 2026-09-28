@@ -205,9 +205,187 @@ def recent_events(conn, limit=10):
         LIMIT ?""", (limit,)).fetchall()
 
 
+# "当前态度" = 每个 repo 最后一条事件。
+# 事件表是流水(只追加、不改不删),所以"改主意"就再写一条 —— 历史留全,
+# 而"现在到底是什么态度"用 id 最大的那条回答。
+_LATEST_OPINION_SQL = """
+SELECT e.repo_id, e.action
+FROM events AS e
+WHERE e.id = (SELECT MAX(id) FROM events WHERE repo_id = e.repo_id)
+"""
+
+
+def latest_opinions(conn):
+    """{repo_id: action} —— 每个 repo 当前的最终态度(最新一条说了算)。"""
+    return {row["repo_id"]: row["action"] for row in conn.execute(_LATEST_OPINION_SQL)}
+
+
+def opinion_map(conn):
+    """{full_name: action} —— 给前端标按钮状态用。"""
+    return {row["full_name"]: row["action"] for row in conn.execute(f"""
+        SELECT r.full_name, e.action
+        FROM events AS e JOIN repos AS r ON r.id = e.repo_id
+        WHERE e.id = (SELECT MAX(id) FROM events WHERE repo_id = e.repo_id)""")}
+
+
+# ---------------- P5:给 API 用的查询 ----------------
+
+# 对外返回的列。集中写一处,免得每个接口各写一份列名(改字段时只改这里)
+API_COLS = ("id, full_name, description, language, topics, "
+            "stargazers_count, pushed_at, html_url")
+
+
+def list_by_stars(conn, lang=None, limit=30):
+    """按 star 数排行的候选池。给了 lang 就只挑那个语言。"""
+    if lang:
+        return conn.execute(
+            f"SELECT {API_COLS} FROM repos WHERE language = ? "
+            "ORDER BY stargazers_count DESC LIMIT ?", (lang, limit)).fetchall()
+    return conn.execute(
+        f"SELECT {API_COLS} FROM repos "
+        "ORDER BY stargazers_count DESC LIMIT ?", (limit,)).fetchall()
+
+
+GROWTH_SQL = """
+SELECT r.id,
+       r.full_name,
+       r.description,
+       r.language,
+       r.html_url,
+       cur.stargazers_count                          AS stars,
+       prev.stargazers_count                         AS prev_stars,
+       cur.stargazers_count - prev.stargazers_count  AS delta
+FROM repo_snapshots AS cur
+JOIN repo_snapshots AS prev ON prev.repo_id = cur.repo_id
+JOIN repos          AS r    ON r.id = cur.repo_id
+WHERE cur.snapshot_date  = ?
+  AND prev.snapshot_date = ?
+"""
+
+
+def growth_rows(conn, cur_day, prev_day):
+    """两个快照日之间、每个 repo 的 star 增量。
+
+    这段 SQL 放在 db.py 而不是 trending.py,是为了让 trending.py(命令行)
+    和 api.py(HTTP)共用同一份查询 —— 两处各写一份,早晚会写歪。
+    """
+    return conn.execute(GROWTH_SQL, (cur_day, prev_day)).fetchall()
+
+
+def get_repo(conn, full_name):
+    return conn.execute(f"SELECT {API_COLS} FROM repos WHERE full_name = ?",
+                        (full_name,)).fetchone()
+
+
+def repo_history(conn, repo_id):
+    """某个 repo 的全部 star 快照(按日期升序)—— 详情页画曲线用。"""
+    return conn.execute(
+        "SELECT snapshot_date, stargazers_count FROM repo_snapshots "
+        "WHERE repo_id = ? ORDER BY snapshot_date", (repo_id,)).fetchall()
+
+
+def starred_list(conn, limit=200):
+    return conn.execute("""
+        SELECT r.id, r.full_name, r.description, r.language, r.html_url,
+               r.stargazers_count, s.starred_at
+        FROM starred AS s JOIN repos AS r ON r.id = s.repo_id
+        ORDER BY s.starred_at DESC LIMIT ?""", (limit,)).fetchall()
+
+
+def find_repo_id(conn, full_name):
+    row = conn.execute("SELECT id FROM repos WHERE full_name = ?",
+                       (full_name,)).fetchone()
+    return row["id"] if row else None
+
+
+# ---------------- P6:README 文本 ----------------
+
+README_SQL = """
+INSERT INTO readmes (repo_id, content)
+VALUES (?, ?)
+ON CONFLICT(repo_id) DO UPDATE SET
+    content    = excluded.content,
+    fetched_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+"""
+
+
+def save_readme(conn, repo_id, content):
+    conn.execute(README_SQL, (repo_id, content))
+    conn.commit()
+
+
+def repos_missing_readme(conn, limit=5000):
+    """还没抓过 README 的 repo,按 star 从高到低 —— 先抓热门,冷门的相似度没人看。"""
+    return conn.execute("""
+        SELECT r.id, r.full_name
+        FROM repos AS r
+        LEFT JOIN readmes AS m ON m.repo_id = r.id
+        WHERE m.repo_id IS NULL
+        ORDER BY r.stargazers_count DESC
+        LIMIT ?""", (limit,)).fetchall()
+
+
+def repos_for_readme(conn, limit=5000, refresh=False):
+    """要抓 README 的 repo,按 star 从高到低。
+
+    refresh=False 只挑还没抓过的(日常增量跑);
+    refresh=True  全部重抓 —— 改了 clean() 的清洗规则之后,得把旧的覆盖掉。
+    """
+    if refresh:
+        return conn.execute(
+            "SELECT id, full_name FROM repos ORDER BY stargazers_count DESC LIMIT ?",
+            (limit,)).fetchall()
+    return repos_missing_readme(conn, limit)
+
+
+def count_readmes(conn):
+    return conn.execute("SELECT COUNT(*) FROM readmes").fetchone()[0]
+
+
+def readme_map(conn):
+    """{repo_id: 文本} —— features.py 一次性取出来拼语料,别在循环里一条条查。"""
+    return {row["repo_id"]: row["content"] or ""
+            for row in conn.execute("SELECT repo_id, content FROM readmes")}
+
+
+def readmes_for(conn, repo_ids):
+    """{repo_id: 文本},只取指定的这几个 —— 出接口时用,别把整张表拉进内存。"""
+    if not repo_ids:
+        return {}
+    marks = ",".join("?" * len(repo_ids))
+    return {row["repo_id"]: row["content"] or "" for row in conn.execute(
+        f"SELECT repo_id, content FROM readmes WHERE repo_id IN ({marks})",
+        tuple(repo_ids))}
+
+
+def repo_readme(conn, repo_id):
+    row = conn.execute("SELECT content FROM readmes WHERE repo_id = ?",
+                       (repo_id,)).fetchone()
+    return (row["content"] or "") if row else ""
+
+
+def repo_delta(conn, repo_id):
+    """最近两个快照日之间这个 repo 的 star 增量;快照不足两份就返回 None。"""
+    rows = conn.execute("""
+        SELECT stargazers_count FROM repo_snapshots
+        WHERE repo_id = ? ORDER BY snapshot_date DESC LIMIT 2""", (repo_id,)).fetchall()
+    if len(rows) < 2:
+        return None
+    return rows[0]["stargazers_count"] - rows[1]["stargazers_count"]
+
+
+def starred_at_of(conn, repo_id):
+    """我什么时候 star 的它;没 star 过返回 None。"""
+    row = conn.execute("SELECT starred_at FROM starred WHERE repo_id = ?",
+                       (repo_id,)).fetchone()
+    return row["starred_at"] if row else None
+
+
 if __name__ == "__main__":
     c = get_conn()
     init_db(c)
     print(f"数据库:{DB_PATH}")
     print(f"repos 表现有 {count_repos(c)} 行")
     print(f"repo_snapshots 表现有 {count_snapshots(c)} 行")
+    print(f"starred        表现有 {count_starred(c)} 行")
+    print(f"events         表现有 {count_events(c)} 行")

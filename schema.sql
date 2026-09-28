@@ -60,7 +60,18 @@ CREATE TABLE IF NOT EXISTS events (
 );
 -- 为什么 events 用自增 id 而不是 (repo_id, action) 做主键:
 -- 行为是"流",记录的是"什么时候做了什么",同一条可以发生很多次 —— 要留全集。
--- starred 是"状态"(sta 或没 sta),所以一个 repo 只留一行。状态和流,建表方式不同。
+-- starred 是"状态"(star 了或没 star),所以一个 repo 只留一行。状态和流,建表方式不同。
 
 CREATE INDEX IF NOT EXISTS idx_events_repo   ON events(repo_id);
 CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);
+
+
+-- ============ P6:内容相似用的文本素材 ============
+-- README 是"这个 repo 到底在干什么"最丰富的文本来源。
+-- 存之前先清洗:去 HTML 标签 + 截断(前 2000 字符足够表达主题,再长就是噪音和内存)。
+CREATE TABLE IF NOT EXISTS readmes (
+    repo_id     INTEGER PRIMARY KEY,
+    content     TEXT,                     -- 清洗并截断后的纯文本
+    fetched_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);

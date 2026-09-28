@@ -11,7 +11,9 @@ cd /home/diagonalc/repo-recommender || exit 1
 mkdir -p logs
 
 # -u = 不缓冲输出。定时任务失败时,日志里能看到它跑到哪一步才断 —— 否则一片空白
-/usr/bin/python3 -u daily_update.py >> logs/daily.log 2>&1
+# 用 venv 里的 python:项目的依赖(fastapi/sklearn/jieba)都装在那儿,
+# 系统 python 是没有的。以后定时任务要跑别的脚本,也一律用这个解释器。
+.venv/bin/python -u daily_update.py >> logs/daily.log 2>&1
 code=$?
 
 echo "--- exit=$code $(date -u +%FT%TZ) ---" >> logs/daily.log

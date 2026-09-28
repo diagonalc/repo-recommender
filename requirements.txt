@@ -1,1 +1,6 @@
+# 装法:.venv/bin/python -m pip install -r requirements.txt
 requests>=2.31
+fastapi>=0.110
+uvicorn>=0.29
+scikit-learn>=1.4
+jieba>=0.42

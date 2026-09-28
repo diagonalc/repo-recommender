@@ -34,3 +34,49 @@ Record users' behaviour and suggest repositories to users.
 - 定时:Windows 任务计划 `RepoRecommenderDaily`,每天 10:17 → 调 C:\Users\Lenovo\repo-recommender-daily.bat → WSL 里跑 run_daily.sh,日志在 logs/daily.log。
 - token:脚本优先读环境变量 GITHUB_TOKEN,没有就读 ~/.config/repo-recommender/token(在仓库外,不可能被提交)。
 - 待办:P4 同步自己的 star 历史(需要 token)。
+
+### 环境:没有 sudo 也把环境搭起来了
+- venv 是这么建的:`python3 -m venv --without-pip .venv`(绕开缺 ensurepip 的报错),
+  再用官方 get-pip.py 往 venv 里塞 pip。全程不需要 sudo,也不用动系统 Python。
+- token 放 `~/.config/repo-recommender/token`(在仓库外,不可能被提交)。
+  找 token 的顺序:环境变量 GITHUB_TOKEN → 该文件。定时任务没有 shell 环境变量,
+  所以文件这条路是必需的。
+
+### P4 同步自己的 star 历史 —— 完成(2026-09-29)
+- 学会:状态表 vs 流水表 —— starred 是"状态"(一个 repo 一行,重复同步只覆盖),events 是"流水"(只追加,同一条可以发生很多次)。建表方式完全不同,这是数据建模的第一课。
+- 学会:/user/starred 的媒体类型 `Accept: application/vnd.github.star+json`。**带它才会返回 starred_at 真实 star 时间** —— ROADMAP 里写的"star 时间 GitHub 不给你,要用快照推算"是过时的,不用绕那个弯。下次核对文档,别信笔记。
+- 结果:starred 15 行(带真实时间)、events 表带 CHECK 约束、sync_stars.py。
+
+### P5 后端 API(FastAPI)—— 完成
+- 学会:路由/路径参数/查询参数、Pydantic 请求体(自动校验 + 自动 422)、FastAPI 白送的 /docs、CORS 为什么必须开、`:path` 路径参数(因为 full_name 自带斜杠)。
+- 接口:GET /api/repos(sort=stars|trending)、GET /api/repos/{owner}/{repo}(含快照历史)、GET /api/me/starred、POST /api/events、GET /api/events、GET /api/recommend。
+- 实测 9 项全过,含错误分支(非法 action → 422、不存在的 repo → 404、只有一份快照时 trending → 409)。
+
+### P6 内容相似推荐 —— 完成(README 全量抓完后可再提升)
+- 学会:TF-IDF 直觉(词频 × 逆文档频率:自己文档里多 = 有代表性,所有文档里都多 = 区分不了任何东西)、为什么必须用稀疏矩阵(本库稀疏度 0.6%)、L2 归一化后"点积 = 余弦相似度"、jieba 处理中文、技术词(c++/node.js)不能被切碎。
+- 结果:fetch_readmes.py(抓 README 当文本素材)、features.py(建向量并缓存)、similar.py(相似查询)、recommend.py(推荐 + 可解释的"因为你 star 过 X")。命令行和 HTTP 接口共用同一份逻辑,SQL 也挪到 db.py 避免两处各写一份。
+- 效果:yt-dlp → youtube-dl / omniget(全对);推荐里出现 `niri-wm/niri`(因为你 star 了 niri 配置仓库)、`Clash-for-Windows_Chinese`(因为 clash-verge-rev)。
+- 待改进:目前只有 137 个 repo 有 README,抓完 1265 个后重跑 `features.py` 质量会明显变好。
+
+### P7 协同过滤 —— 有意跳过(ROADMAP 里本来就标"可选")
+- 原因:它要"别人的行为数据"(采样高 star 用户的 star 列表 / GH Archive 子集),数据量和复杂度都上一个台阶;而且单用户、star 只有 15 个的场景下,P6 的内容相似已经够用。
+- 想做的话:P6 的输出是干净的一层,再加一层协同过滤权重混进去即可,不用推倒重来。
+
+### P8 前端网页 —— 完成
+- 学会:fetch 调 API、DOM 构建节点(**用 textContent 而不是 innerHTML** —— repo 描述是别人写的文本,拼进 innerHTML 等于把别人的内容当代码执行)、tab 切换、卡片布局。
+- 结果:web/index.html + web/app.js(原生 JS,无框架)。三个 tab:Trending / 推荐 / 我的;卡片有名称、描述、语言色点、star 数、topic 标签;[感兴趣]/[不感兴趣] 按钮 POST 到 /api/events —— **行为闭环打通**。
+- 打开方式:后端 `uvicorn api:app --port 8000`,前端 `cd web && python3 -m http.server 5500`,然后浏览器访问 http://127.0.0.1:5500/
+
+### P9 部署 —— 部分完成
+- 已完成:每日自动更新(Windows 任务计划 → WSL → daily_update.py),日志在 logs/daily.log。
+- 未做:公网部署、每天推送到手机。单机自用已经够,想上公网再学 Docker + 服务器。
+
+### 后续增强(2026-09-29)
+- **反馈可以改答案了**:以前点完就锁死,现在点另一个选项就能改。实现的关键是分清"流水"和"状态":events 表还是只追加(历史留全),但"当前态度"取每个 repo 的**最新一条**(`db.latest_opinions`)。所以改主意不会抹掉历史,而推荐永远跟着你最新的选择走。
+- **"感兴趣"终于被推荐用上了**:之前 recommend.py 只用 not_interested 做排除,interested 点了等于白点。现在正向信号 = star 过的 ∪ 点过感兴趣的,负向信号 = 当前态度为不感兴趣(排除)。每条的推荐理由也说实话了 —— 分清"因为你 star 过 X"和"因为你点过感兴趣 X"(以前一律写"star 过",是错的)。
+- **每条 repo 加了"介绍"**:从 README 里抽一段比 description 更具体的说明(intro.py)。这是启发式的,没有用模型,所以:
+  - 实测 65% 能从 README 抽到正文,35% 退回 description
+  - 抽到的里面大约一半质量好、一半带噪音(广告横幅、语言选择器、代码块)
+  - 兜底策略是"拿不准就退回 description" —— 短一点,但一定是对的,不会把广告当介绍
+  - **想根治得上模型做摘要**,那需要 API key
+- 抽取的判据演进:先按"第一句不是噪音的"取 → 广告一直钻空子 → 改成"在候选句里挑和 description 词重合度最高的",重合度低于 0.25 就宁可退回 description。

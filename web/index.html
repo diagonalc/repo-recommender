@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repo Recommender</title>
+<style>
+  /* 配色直接抄 GitHub 深色主题,不自创 —— 少一件事要想 */
+  :root {
+    --bg:      #0d1117;
+    --card:    #161b22;
+    --border:  #30363d;
+    --text:    #c9d1d9;
+    --muted:   #8b949e;
+    --accent:  #58a6ff;
+    --ok:      #3fb950;
+    --bad:     #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; align-items: center; gap: 20px;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  nav { display: flex; gap: 6px; }
+  .tab {
+    background: none; border: 1px solid transparent; color: var(--muted);
+    padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  .tab:hover { background: var(--card); color: var(--text); }
+  .tab.active { background: var(--card); border-color: var(--border); color: var(--text); }
+
+  main { max-width: 860px; margin: 0 auto; padding: 20px; }
+  .status { color: var(--muted); padding: 20px 0; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 12px;
+  }
+  .card-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .name { color: var(--accent); text-decoration: none; font-size: 16px; font-weight: 600; }
+  .name:hover { text-decoration: underline; }
+  .reason { color: var(--muted); font-size: 12px; }
+  .desc { color: var(--muted); margin: 6px 0 10px; }
+  /* 介绍:来自 README 的那段,比 description 更具体,所以给正文色而不是灰字 */
+  .intro {
+    color: var(--text); background: #0d1117; border-left: 3px solid var(--border);
+    border-radius: 4px; padding: 8px 12px; margin: 0 0 10px; font-size: 13px;
+  }
+  .intro-label { color: var(--muted); font-weight: 600; }
+  .meta { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .topics { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+  .topic {
+    background: #1f6feb22; color: var(--accent); border: 1px solid #1f6feb55;
+    border-radius: 20px; padding: 1px 10px; font-size: 12px;
+  }
+  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .btn {
+    background: #21262d; border: 1px solid var(--border); color: var(--text);
+    padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.ok:hover  { border-color: var(--ok);  color: var(--ok); }
+  .btn.bad:hover { border-color: var(--bad); color: var(--bad); }
+  /* 已选中的那个按钮 —— 按钮不禁用,随时可以改点另一个 */
+  .btn.ok.chosen  { border-color: var(--ok);  color: var(--ok);  background: #3fb95018; }
+  .btn.bad.chosen { border-color: var(--bad); color: var(--bad); background: #f8514918; }
+  .vote-note { color: var(--muted); font-size: 12px; align-self: center; }
+  .delta { color: var(--ok); font-weight: 600; }
+
+  /* ---------- 详情页 ---------- */
+  .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 6px; }
+  .detail-title { font-size: 20px; margin: 0; }
+  .detail-desc { color: var(--muted); margin: 0 0 12px; }
+  .detail-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .btn.back { margin-bottom: 4px; }
+  .btn.gh { text-decoration: none; display: inline-block; }
+  .detail-intro {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; margin-top: 14px;
+  }
+  .section-title {
+    font-size: 12px; color: var(--muted); font-weight: 600;
+    letter-spacing: .06em; margin-bottom: 8px;
+  }
+  /* README 正文:保留换行(pre-wrap),超长可滚动 */
+  pre.readme {
+    white-space: pre-wrap; word-break: break-word; margin: 0;
+    font: 12.5px/1.7 ui-monospace, Consolas, "Noto Sans Mono CJK SC", monospace;
+    color: var(--text); max-height: 460px; overflow-y: auto;
+  }
+  .muted { color: var(--muted); }
+  .chart { display: flex; align-items: flex-end; gap: 20px; height: 110px; padding-top: 8px; }
+  .chart-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .chart-bar { width: 26px; background: var(--accent); border-radius: 3px 3px 0 0; }
+  .chart-label { font-size: 11px; color: var(--muted); }
+  .similar-row { padding: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Repo Recommender</h1>
+  <nav>
+    <button class="tab active" data-tab="trending">Trending</button>
+    <button class="tab" data-tab="recommend">推荐</button>
+    <button class="tab" data-tab="starred">我的</button>
+  </nav>
+</header>
+<main>
+  <div id="status" class="status">加载中…</div>
+  <div id="detail" style="display:none"></div>
+  <div id="list"></div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
