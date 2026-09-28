@@ -75,3 +75,16 @@ CREATE TABLE IF NOT EXISTS readmes (
     fetched_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
+
+-- 自动补的标签(给"作者自己没设 topics"的仓库兜底)。
+--
+-- 为什么不直接写回 repos.topics:
+--   每天 daily_update 会拿 GitHub 返回的 topics 覆盖那一列,而 GitHub 对没设
+--   topics 的仓库永远返回空数组 —— 写回去第二天就被抹掉了。
+--   要活得下来的数据,就得和自己的来源分开存。
+CREATE TABLE IF NOT EXISTS auto_tags (
+    repo_id  INTEGER NOT NULL,
+    tag      TEXT    NOT NULL,
+    PRIMARY KEY (repo_id, tag),
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);

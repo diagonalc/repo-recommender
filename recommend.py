@@ -19,6 +19,7 @@
     推荐结果不可解释就没法调。看到"为什么推它",你才能判断是相似度算歪了,
     还是你自己的口味数据太少 —— 否则只能盲调权重。
 """
+import json
 import sys
 
 import numpy as np
@@ -29,8 +30,12 @@ from features import load_features
 POPULARITY_WEIGHT = 0.1
 
 
-def recommend_for(conn, n=20):
+def recommend_for(conn, n=20, offset=0):
     """算推荐列表。命令行和 HTTP 接口共用这一份逻辑(别写两遍)。
+
+    offset 用来"换一批":推荐是按分数排好的长列表,取第 offset 个开始的 n 个。
+    这样点一次刷新就往后翻一段,每次都是没看过的新 repo ——
+    比重新算一遍强(重算结果还是一样,等于没换)。
 
     返回 list[dict],已按分数从高到低排好。
     没有向量缓存或没有口味信号时抛 RuntimeError,由调用方决定怎么呈现
@@ -75,24 +80,30 @@ def recommend_for(conn, n=20):
               if act == "not_interested" and rid in pos}
     my_set = set(my_pos)
     meta = {row["id"]: (row["full_name"], row["language"], row["stargazers_count"],
-                        row["description"], row["html_url"])
+                        row["description"], row["html_url"], row["topics"])
             for row in conn.execute(
                 "SELECT id, full_name, language, stargazers_count, description, "
-                "html_url FROM repos")}
+                "html_url, topics FROM repos")}
 
     out = []
     for i, rid in enumerate(ids):
         if i in my_set or i in banned or best_sim[i] <= 0:
             continue
-        name, lang, stars, desc, url = meta.get(rid, ("?", None, 0, None, None))
+        name, lang, stars, desc, url, topics_json = meta.get(
+            rid, ("?", None, 0, None, None, None))[0:6]
         popularity = 1 + POPULARITY_WEIGHT * np.log10(max(stars, 1))
         # best_from[i] 是"我的第几个正向信号",要转回 repo_id 再转成名字
         src_id = ids[my_pos[best_from[i]]]
+        try:
+            topics = json.loads(topics_json or "[]")
+        except (TypeError, ValueError):
+            topics = []
         out.append({
             "full_name": name,
             "language": lang,
             "stargazers_count": stars,
             "html_url": url,          # 之前漏了,导致推荐页的标题链接是坏的
+            "topics": topics,         # 也漏了,导致推荐页的标签不显示
             "similarity": round(float(best_sim[i]), 4),
             "score": round(float(best_sim[i] * popularity), 4),
             "because_of": meta.get(src_id, ("?",))[0],
@@ -103,17 +114,28 @@ def recommend_for(conn, n=20):
         })
 
     out.sort(key=lambda d: -d["score"])
-    top = out[:n]
+    top = out[offset:offset + n]        # 换一批:取下一段
 
     # 补上"介绍":从 README 抽的那段(抽不到就用 description)。
     # 只对最终要展示的这几条查 README,不把整张表拉进来。
     from intro import extract_intro
-    readmes = db.readmes_for(conn, [d["repo_id"] for d in top])
+    ids_top = [d["repo_id"] for d in top]
+    readmes = db.readmes_for(conn, ids_top)
+    auto = db.auto_tags_for(conn, ids_top)
+
     for d in top:
         rid = d.pop("repo_id")
         d["intro"] = extract_intro(readmes.get(rid, ""),
                                    d.pop("_desc", None) or "",
                                    d["full_name"])
+        # 自动补的标签也要并进来 —— 否则同一个 repo 在 Trending 页有标签、
+        # 到推荐页就没标签了,同一个字段两处口径不一致最容易被当成 bug。
+        merged = list(d.get("topics") or [])
+        for x in auto.get(rid, []):
+            if x not in merged:
+                merged.append(x)
+        d["topics"] = merged
+
     return top
 
 

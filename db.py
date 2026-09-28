@@ -236,14 +236,151 @@ API_COLS = ("id, full_name, description, language, topics, "
 
 
 def list_by_stars(conn, lang=None, limit=30):
-    """按 star 数排行的候选池。给了 lang 就只挑那个语言。"""
+    """按 star 数排行的候选池(保留这个函数,内部走通用查询)。"""
+    return list_repos(conn, sort="stars", lang=lang, limit=limit)
+
+
+# 排序方式 → 对应的 SQL 片段。集中写一处,加新排序只改这里。
+SORTS = {
+    "stars":  "stargazers_count DESC",
+    "pushed": "pushed_at DESC",
+    "name":   "full_name ASC",
+}
+DEFAULT_SORT = "stars"
+
+
+def list_repos(conn, sort=DEFAULT_SORT, lang=None, tags=None, limit=30):
+    """通用列表查询:排序 + 按语言筛 + 按标签筛(可多选)。
+
+    标签 = GitHub 的 topics。它在库里是 JSON 字符串数组,
+    所以用 SQLite 的 json_each 把它展开成行来比对。
+    不能用 LIKE '%"go"%':那样 'django' 会被 "go" 误伤。
+
+    多个标签之间是「与」:每多选一个就收窄一次范围。
+    想找"又是 rust 又是 cli 的 repo",就得这样叠。
+    """
+    order = SORTS.get(sort, SORTS[DEFAULT_SORT])
+
+    where, params = [], []
     if lang:
-        return conn.execute(
-            f"SELECT {API_COLS} FROM repos WHERE language = ? "
-            "ORDER BY stargazers_count DESC LIMIT ?", (lang, limit)).fetchall()
+        where.append("language = ?")
+        params.append(lang)
+
+    for tag in (tags or []):
+        # 标签有两个来源:作者设的 topics、我们自动补的 auto_tags。
+        # 筛选要把两边都算上,否则自动补的标签点进去会是空的。
+        where.append("(EXISTS (SELECT 1 FROM json_each(repos.topics) "
+                     "WHERE json_each.value = ?) "
+                     "OR EXISTS (SELECT 1 FROM auto_tags "
+                     "WHERE auto_tags.repo_id = repos.id AND auto_tags.tag = ?))")
+        params.extend([tag, tag])
+
+    sql = f"SELECT {API_COLS} FROM repos"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {order} LIMIT ?"
+    params.append(limit)
+
+    return conn.execute(sql, tuple(params)).fetchall()
+
+
+def rows_by_full_names(conn, names):
+    """按 full_name 批量取行 —— 全站搜索把结果写库后,用这个按原顺序取回来。"""
+    names = [n for n in names if n]
+    if not names:
+        return []
+    marks = ",".join("?" * len(names))
+    return conn.execute(
+        f"SELECT {API_COLS} FROM repos WHERE full_name IN ({marks})",
+        tuple(names)).fetchall()
+
+
+def search_repos(conn, q, limit=60):
+    """按关键词搜 repo:名字、描述、标签、README、自动标签都翻一遍。
+
+    排序按"命中在哪儿"分级:名字 > 描述 > 标签 > README。
+    不做分级的话,一个在 README 里顺带提了一句的 repo 会和名字直接命中的
+    排在一起,最相关的那几个反而要翻半天。
+    """
+    like = f"%{q}%"
+    return conn.execute(f"""
+        SELECT {API_COLS},
+               CASE WHEN full_name  LIKE :q THEN 0
+                    WHEN description LIKE :q THEN 1
+                    WHEN topics      LIKE :q THEN 2
+                    ELSE 3 END AS rank
+        FROM repos
+        WHERE full_name LIKE :q OR description LIKE :q OR topics LIKE :q
+           OR id IN (SELECT repo_id FROM readmes   WHERE content LIKE :q)
+           OR id IN (SELECT repo_id FROM auto_tags WHERE tag     LIKE :q)
+        ORDER BY rank ASC, stargazers_count DESC
+        LIMIT :lim""", {"q": like, "lim": limit}).fetchall()
+
+
+def list_tags(conn, limit=300):
+    """所有标签 + 各自带多少个 repo,按数量从多到少。
+
+    两个来源合并:作者设的 topics,和我们自动补的 auto_tags。
+    """
+    return conn.execute("""
+        SELECT tag, COUNT(*) AS n FROM (
+            SELECT j.value AS tag
+            FROM repos, json_each(repos.topics) AS j
+            WHERE j.value IS NOT NULL AND j.value != ''
+            UNION ALL
+            SELECT tag FROM auto_tags WHERE tag IS NOT NULL AND tag != ''
+        )
+        GROUP BY tag
+        ORDER BY n DESC, tag ASC
+        LIMIT ?""", (limit,)).fetchall()
+
+
+def tag_cloud_count(conn):
+    """有标签的 repo 有多少个(两个来源任一有就算) —— 用来看覆盖率。"""
+    return conn.execute("""
+        SELECT COUNT(*) AS n FROM repos
+        WHERE (topics IS NOT NULL AND topics NOT IN ('[]', ''))
+           OR EXISTS (SELECT 1 FROM auto_tags WHERE auto_tags.repo_id = repos.id)
+    """).fetchone()["n"]
+
+
+# ---------------- 自动补的标签 ----------------
+
+AUTO_TAG_SQL = "INSERT OR IGNORE INTO auto_tags (repo_id, tag) VALUES (?, ?)"
+
+
+def save_auto_tags(conn, repo_id, tags):
+    conn.executemany(AUTO_TAG_SQL, [(repo_id, t) for t in tags if t])
+    conn.commit()
+
+
+def clear_auto_tags(conn):
+    conn.execute("DELETE FROM auto_tags")
+    conn.commit()
+
+
+def auto_tags_for(conn, repo_ids):
+    """{repo_id: [标签, ...]} —— 出接口时把它们并进 topics 给前端。"""
+    if not repo_ids:
+        return {}
+    marks = ",".join("?" * len(repo_ids))
+    out = {}
+    for row in conn.execute(
+            f"SELECT repo_id, tag FROM auto_tags WHERE repo_id IN ({marks}) "
+            "ORDER BY tag", tuple(repo_ids)):
+        out.setdefault(row["repo_id"], []).append(row["tag"])
+    return out
+
+
+def count_auto_tags(conn):
+    return conn.execute("SELECT COUNT(*) AS n FROM auto_tags").fetchone()["n"]
+
+
+def repos_without_topics(conn):
+    """作者没设 topics 的 repo(自动补标签就补这些)。"""
     return conn.execute(
         f"SELECT {API_COLS} FROM repos "
-        "ORDER BY stargazers_count DESC LIMIT ?", (limit,)).fetchall()
+        "WHERE topics IS NULL OR topics IN ('[]', '')").fetchall()
 
 
 GROWTH_SQL = """
@@ -252,6 +389,7 @@ SELECT r.id,
        r.description,
        r.language,
        r.html_url,
+       r.topics,
        cur.stargazers_count                          AS stars,
        prev.stargazers_count                         AS prev_stars,
        cur.stargazers_count - prev.stargazers_count  AS delta
@@ -362,6 +500,16 @@ def repo_readme(conn, repo_id):
     row = conn.execute("SELECT content FROM readmes WHERE repo_id = ?",
                        (repo_id,)).fetchone()
     return (row["content"] or "") if row else ""
+
+
+def has_readme_row(conn, repo_id):
+    """有没有"抓过"的记录。
+
+    注意和"内容为空"的区别:抓过但那个 repo 没有 README,存的是一条空字符串 ——
+    那说明我们查过了,不该再查第二遍。没有行才是"还没查过"。
+    """
+    return conn.execute("SELECT 1 FROM readmes WHERE repo_id = ?",
+                        (repo_id,)).fetchone() is not None
 
 
 def repo_delta(conn, repo_id):

@@ -166,10 +166,12 @@ def extract_intro(readme, description="", repo_name="", max_len=220):
                 return _trim(best, max_len)
             # 拿不准就退回 description:短,但一定不会把广告当介绍
             if description:
-                return description.strip()
+                return _trim(description.strip(), max_len)
             return _trim(candidates[0], max_len)
 
-    return (description or "").strip()
+    # 兜底也要截断。有的 repo 的 description 长得离谱(整段话塞进去),
+    # 之前这里直接 return 原文,于是 max_len 这个上限形同虚设。
+    return _trim((description or "").strip(), max_len)
 
 
 def readable(readme, max_chars=2600):

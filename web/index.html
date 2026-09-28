@@ -101,18 +101,86 @@
   .chart-bar { width: 26px; background: var(--accent); border-radius: 3px 3px 0 0; }
   .chart-label { font-size: 11px; color: var(--muted); }
   .similar-row { padding: 4px 0; }
+
+  /* ---------- 作者头像 ---------- */
+  .avatar {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--border); object-fit: cover; flex: 0 0 auto;
+  }
+  .detail-head .avatar { width: 40px; height: 40px; }
+  .owner-link { color: var(--muted); text-decoration: none; }
+  .owner-link:hover { color: var(--accent); text-decoration: underline; }
+
+  /* ---------- 工具栏:刷新 / 排序 / 当前筛选 ---------- */
+  /* 搜索框吃掉剩余空间,把后面的语言/刷新按钮推到最右 */
+  .search {
+    margin-left: auto; width: 300px; font-size: 13px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 10px; color: var(--text);
+  }
+  .search:focus { outline: none; border-color: var(--accent); }
+  .search::placeholder { color: var(--muted); }
+  .scope {
+    background: var(--card); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 6px; font-size: 12px; cursor: pointer;
+  }
+  .btn.batch { margin-right: 2px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar label { font-size: 12px; color: var(--muted); }
+  .toolbar select {
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer;
+  }
+  /* 当前生效的筛选条件,点 ✕ 取消 */
+  .chip {
+    background: #1f6feb22; color: var(--accent); border: 1px solid #1f6feb55;
+    border-radius: 20px; padding: 2px 10px; font-size: 12px; cursor: pointer;
+  }
+  .chip:hover { background: #1f6feb33; }
+  /* 文本块最多 4 行,超了打点省略 —— 有的 repo 描述/介绍长得离谱,
+     一张卡能撑满整屏,列表就没法扫了。数据层也截了,这里是第二道保险 */
+  .desc, .intro {
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* 作者(头像 + 名字) */
+  .owner { display: inline-flex; align-items: center; gap: 5px; }
+  .owner .avatar { width: 14px; height: 14px; }
+  .detail-meta .owner .avatar { width: 18px; height: 18px; }
+
+  /* 卡片上的标签可点:点了就看同标签的 repo */
+  .topic.clickable { cursor: pointer; }
+  .topic.clickable:hover { background: #1f6feb55; }
+  /* 已选中的标签:高亮,再点一下取消 */
+  .topic.on { background: #1f6feb66; border-color: var(--accent); color: #fff; }
+  .tagcloud { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tagcloud .topic { cursor: pointer; font-size: 13px; padding: 3px 12px; }
+  .tagcloud .topic:hover { background: #1f6feb55; }
 </style>
 </head>
 <body>
 <header>
   <h1>Repo Recommender</h1>
   <nav>
-    <button class="tab active" data-tab="trending">Trending</button>
-    <button class="tab" data-tab="recommend">推荐</button>
-    <button class="tab" data-tab="starred">我的</button>
+    <button class="tab active" data-tab="trending" data-i18n="tab_trending">Trending</button>
+    <button class="tab" data-tab="recommend" data-i18n="tab_recommend">推荐</button>
+    <button class="tab" data-tab="tags" data-i18n="tab_tags">标签</button>
+    <button class="tab" data-tab="starred" data-i18n="tab_starred">我的</button>
   </nav>
+  <input id="search" class="search" type="search"
+         placeholder="搜索 repo:名字 / 描述 / 标签 / README">
+  <select id="scope" class="scope" title="搜索范围 / Search scope">
+    <option value="local">本地库</option>
+    <option value="github">全 GitHub</option>
+  </select>
+  <button id="lang" class="btn lang" title="切换语言 / Switch language">EN</button>
+  <button id="refresh" class="btn refresh" data-i18n="refresh">↻ 刷新</button>
 </header>
 <main>
+  <div id="toolbar" class="toolbar"></div>
   <div id="status" class="status">加载中…</div>
   <div id="detail" style="display:none"></div>
   <div id="list"></div>
