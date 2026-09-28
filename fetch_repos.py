@@ -19,7 +19,15 @@ LANGUAGES = ["python", "javascript", "typescript", "rust", "go", "java"]
 PAGES_PER_LANG = 2                     # 每页最多 100 个 → 6 语言 × 2 页 ≈ 1200 个
 BASE_URL = "https://api.github.com/search/repositories"
 RAW_DIR = "data/raw"
-TOKEN = os.environ.get("GITHUB_TOKEN")  # 从环境变量读,绝不写死在代码里
+# token 从哪来:优先环境变量;没有就找 ~/.config/repo-recommender/token 这个文件。
+# 为什么还要支持文件:cron / Windows 任务计划拉起脚本时,没有你 shell 里的环境变量,
+# 只有放文件里它们才读得到。而且这个文件在仓库之外 —— 技术上不可能被 git 提交。
+TOKEN = os.environ.get("GITHUB_TOKEN")
+if not TOKEN:
+    _token_file = os.path.expanduser("~/.config/repo-recommender/token")
+    if os.path.exists(_token_file):
+        with open(_token_file, encoding="utf-8") as _f:
+            TOKEN = _f.read().strip() or None
 
 # 每个 repo 至少保留这些字段(P2 入库要用)
 KEEP_FIELDS = ["id", "full_name", "description", "language",
