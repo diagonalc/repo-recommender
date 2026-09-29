@@ -42,13 +42,13 @@ MIN_DF = 2          # 至少在 2 篇文档里出现过的词才要(只出现一
 
 # 技术文本里到处都是、但完全区分不了主题的词
 STOPWORDS = {
-    "the", "and", "for", "with", "you", "your", "that", "this", "are", "from",
+    "the", "and", "for", "with", "you", "your", "that", "this", "is", "are", "from",
     "can", "will", "not", "use", "using", "used", "github", "com", "http",
     "https", "www", "org", "more", "all", "any", "our", "it's", "its",
     "code", "project", "repo", "repository", "readme", "install", "installation",
     "documentation", "docs", "example", "examples", "feature", "features",
     "支持", "使用", "一个", "我们", "可以", "这个", "项目", "功能", "安装",
-    "文档", "示例", "以及", "提供", "基于", "通过", "进行", "需要",
+    "文档", "示例", "以及", "提供", "基于", "通过", "进行", "需要", "实现"
 }
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#._-]*")   # 保住 c++ / c# / node.js / scikit-learn 这类词
