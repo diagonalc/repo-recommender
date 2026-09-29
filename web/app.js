@@ -5,7 +5,13 @@
 //   好处是**浏览器的前进/后退真的能用**,而不是只能点页面里那个"返回"。
 //
 // 导航:左侧竖栏(悬停展开)+ 中间窄栏内容。文案统一走 t("key"),中英可切;外观中英同理。
-const API = "http://127.0.0.1:8000";
+// 前后端现在是**同一个端口**(FastAPI 直接托管前端),所以用相对路径就行。
+// 只有开发时前端单独跑在 5500 上,才需要指回 8000。
+const API = location.port === "5500" ? `http://${location.hostname}:8000` : "";
+
+// 所有请求都带上 cookie —— 会话就靠它。
+// (同源时浏览器默认会带,但显式写出来,换端口开发时也不会忘)
+const FETCH_OPTS = { credentials: "include" };
 
 const I18N = {
   zh: {
@@ -33,6 +39,11 @@ const I18N = {
     un_not_interested: "取消不感兴趣",
     comments_go: "查看评论", star_go: "在 GitHub 上 star", starred_ok: "已 star ✓",
     me: "我",
+    login: "用 GitHub 登录",
+    logout: "退出登录",
+    login_blurb: "记录你的 star、关注和口味,每天给你推对口味的 repo。",
+    need_login: "这个页面要登录才能用。",
+    login_not_ready: "还没配置 OAuth 凭据:把 Client ID / Secret 填进 ~/.config/repo-recommender/oauth.env",
     snapshots: "star 快照 ({0})", readme: "README",
     readme_none: "还没抓到这个 repo 的 README。",
     similar: "相似的 repo", similarity: "相似度",
@@ -86,6 +97,11 @@ const I18N = {
     un_not_interested: "Undo not interested",
     comments_go: "View comments", star_go: "Star on GitHub", starred_ok: "Starred ✓",
     me: "me",
+    login: "Sign in with GitHub",
+    logout: "Sign out",
+    login_blurb: "Tracks your stars and interests, and recommends repos you'll actually like.",
+    need_login: "This page needs you to sign in.",
+    login_not_ready: "OAuth credentials not configured: fill Client ID / Secret into oauth.env",
     snapshots: "Star snapshots ({0})", readme: "README",
     readme_none: "No README captured yet.",
     similar: "Similar repos", similarity: "similarity",
@@ -228,6 +244,11 @@ const ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round">' +
     '<path d="M19.5 12h-14"/><polyline points="11.5 6 5.5 12 11.5 18"/></svg>',
+  logout:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M14 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4"/>' +
+    '<polyline points="9 8 5 12 9 16"/><path d="M5 12h10"/></svg>',
   // 翻译:左边一个"文"字旁,右边一个 A —— 通用的翻译符号
   translate:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
@@ -267,6 +288,7 @@ pageBackEl.onclick = () => {
 
 let opinions = {};
 let scrollTo = null;   // 详情页渲染完后要滚到哪(从评论按钮进来时用)
+let currentUser = { logged_in: false };   // 当前登录的人(renderUserMenu 会更新它)
 
 // 只放"不进 URL"的界面状态。页面 / 标签 / 搜索词都从 URL 读,URL 是唯一事实来源。
 const state = {
@@ -547,7 +569,8 @@ function postActions(r, node, opts = {}) {
     e.stopPropagation();
     st.disabled = true;
     try {
-      const res = await fetch(API + "/api/star/" + r.full_name, { method: "POST" });
+      const res = await fetch(API + "/api/star/" + r.full_name,
+                              { method: "POST", credentials: "include" });
       const out = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(out.detail || ("HTTP " + res.status));
       st.classList.add("on");
@@ -650,6 +673,7 @@ async function vote(fullName, action, paint, note) {
   try {
     const res = await fetch(API + "/api/events", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ full_name: fullName, action: action }),
     });
@@ -1090,11 +1114,13 @@ function renderDetail(d) {
     }
     items.forEach(c => {
       const row = h("div", "comment");
-      // 作者:现在只有你自己,所以库里是空的,显示成"我"。
-      // 以后多人用的时候,这一列就有名字了。
-      row.appendChild(h("div", "comment-meta",
-        (c.author || t("me")) + " · " +
+      // 评论者:从 users 表关联出来的(不是存的字符串)—— 这正是多用户的意义
+      const meta = h("div", "comment-meta");
+      if (c.author_login) meta.appendChild(avatarImg(c.author_login, 32));
+      meta.appendChild(h("span", null,
+        (c.author_login || t("me")) + " · " +
         (c.created_at || "").slice(0, 16).replace("T", " ")));
+      row.appendChild(meta);
       row.appendChild(h("div", "comment-body", c.body));
       clist.appendChild(row);
     });
@@ -1109,6 +1135,7 @@ function renderDetail(d) {
     try {
       const res = await fetch(API + "/api/comments/" + d.full_name, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body: text }),
       });
@@ -1123,13 +1150,20 @@ function renderDetail(d) {
     }
   };
 
-  const editor = h("div", "comment-editor");
-  editor.appendChild(ta);
-  const row = h("div", "comment-actions");
-  row.appendChild(send);
-  row.appendChild(cnote);
-  editor.appendChild(row);
-  cs.appendChild(editor);
+  // 没登录就不给写 —— 评论是要署名的,总得知道是谁写的
+  if (currentUser.logged_in) {
+    const editor = h("div", "comment-editor");
+    editor.appendChild(ta);
+    const row = h("div", "comment-actions");
+    row.appendChild(send);
+    row.appendChild(cnote);
+    editor.appendChild(row);
+    cs.appendChild(editor);
+  } else {
+    const a = h("a", "btn", t("login"));
+    a.href = API + "/auth/login";
+    cs.appendChild(a);
+  }
   cs.appendChild(clist);
   detailEl.appendChild(cs);
 
@@ -1211,7 +1245,7 @@ async function showDetail(fullName) {
     renderDetail(await getJSON("/api/repos/" + fullName));
   } catch (e) {
     detailEl.replaceChildren();
-    statusEl.textContent = t("detail_error") + e.message;
+    if (!needLogin(e)) statusEl.textContent = t("detail_error") + e.message;
   }
 }
 
@@ -1226,10 +1260,119 @@ function render(items, opts) {
 }
 
 async function getJSON(path) {
-  const res = await fetch(API + path);
+  const res = await fetch(API + path, FETCH_OPTS);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.detail || ("HTTP " + res.status));
+  if (!res.ok) {
+    const err = new Error(body.detail || ("HTTP " + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return body;
+}
+
+// 需要登录的页面:没登录就显示一个登录提示,而不是一句干巴巴的错误
+function needLogin(err) {
+  if (err && err.status === 401) {
+    showLoginPrompt();
+    return true;
+  }
+  return false;
+}
+
+// ---- 右上角的用户菜单 ----
+const userMenuEl = document.getElementById("usermenu");
+
+async function renderUserMenu() {
+  userMenuEl.replaceChildren();
+
+  let me = { logged_in: false };
+  try {
+    me = await getJSON("/api/me");
+  } catch { /* 拿不到就当没登录,不弹错 */ }
+  currentUser = me;               // 别处(比如评论区)也要知道登录没登录
+
+  if (!me.logged_in) {
+    const a = h("a", "btn", t("login"));
+    a.href = API + "/auth/login";
+    if (!me.oauth_ready) a.title = t("login_not_ready");
+    userMenuEl.appendChild(a);
+    return;
+  }
+
+  const wrap = h("div", "sel more user");
+  const btn = h("button", "icon-btn avatar-btn");
+  btn.title = me.user.login;
+  if (me.user.avatar_url) {
+    const img = document.createElement("img");
+    img.className = "avatar";
+    img.src = me.user.avatar_url;
+    img.alt = me.user.login;
+    img.referrerPolicy = "no-referrer";
+    img.onerror = () => { img.removeAttribute("src"); };
+    btn.appendChild(img);
+  } else {
+    btn.appendChild(iconSpan("user", 22));
+  }
+  wrap.appendChild(btn);
+
+  const menu = h("div", "sel-menu");
+  const out = h("div", "sel-item");
+  out.appendChild(iconSpan("logout", 16));
+  out.appendChild(h("span", null, t("logout")));
+  out.onclick = async (e) => {
+    e.stopPropagation();
+    wrap.classList.remove("open");
+    try {
+      await fetch(API + "/auth/logout", { method: "POST", credentials: "include" });
+    } catch { /* 退出失败也照常走 */ }
+    location.reload();          // 重新走一遍启动流程 —— 会停在登录页
+  };
+  menu.appendChild(out);
+  wrap.appendChild(menu);
+
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = wrap.classList.contains("open");
+    document.querySelectorAll(".sel.open").forEach(s => s.classList.remove("open"));
+    if (!wasOpen) wrap.classList.add("open");
+  };
+  userMenuEl.appendChild(wrap);
+}
+
+// 没登录时:整页只有登录界面,而不是进主页面再到处报错
+function renderLoginScreen(me) {
+  document.body.classList.add("logged-out");   // 导航不显示,内容也不用给它让位
+  railEl.replaceChildren();
+  const head = document.querySelector(".pagehead");
+  if (head) head.style.display = "none";
+  toolbarEl.replaceChildren();
+  listEl.replaceChildren();
+  searchPageEl.style.display = "none";
+  detailEl.style.display = "none";
+  statusEl.textContent = "";
+
+  const box = h("div", "login-screen");
+  const brand = h("div", "login-brand");
+  const ico = h("span", "ico");
+  ico.innerHTML = ICONS.brand;
+  brand.appendChild(ico);
+  brand.appendChild(h("span", null, APP_NAME));
+  box.appendChild(brand);
+
+  box.appendChild(h("p", "login-blurb", t("login_blurb")));
+
+  const a = h("a", "btn primary", t("login"));
+  a.href = API + "/auth/login";
+  box.appendChild(a);
+
+  if (!me.oauth_ready) {
+    box.appendChild(h("p", "muted", t("login_not_ready")));
+  }
+  listEl.appendChild(box);
+}
+
+function showLoginPrompt() {
+  renderLoginScreen({ logged_in: false, oauth_ready: true });
 }
 
 function sortRecommend(items) {
@@ -1312,7 +1455,7 @@ async function loadList() {
       render(d.items, { feedback: false, summary: t("summary_starred", d.count) });
     }
   } catch (e) {
-    statusEl.textContent = t("error") + e.message;
+    if (!needLogin(e)) statusEl.textContent = t("error") + e.message;
   }
 }
 
@@ -1321,7 +1464,18 @@ applyTheme(currentTheme());
 syncRailOpen();
 window.addEventListener("resize", syncRailOpen);   // 拖窗口大小时跟着变
 document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-buildRail();
-// 没有 hash 就先补一个,并且用 replaceState —— 别让"进入网站"这件事本身占用一条历史记录
-if (!location.hash) history.replaceState(null, "", "#/recommend");
-route();
+
+(async () => {
+  // 先问一句"我是谁":**没登录就直接停在登录页**,不要先闪一下主界面再到处报错
+  const me = await getJSON("/api/me").catch(() => ({ logged_in: false }));
+  currentUser = me;
+  if (!me.logged_in) {
+    renderLoginScreen(me);
+    return;
+  }
+  buildRail();
+  // 没有 hash 就补一个,并且用 replaceState —— 别让"进入网站"本身占用一条历史记录
+  if (!location.hash) history.replaceState(null, "", "#/recommend");
+  renderUserMenu();
+  route();
+})();

@@ -266,3 +266,64 @@ Record users' behaviour and suggest repositories to users.
 - **三个点挪到页头 "Releases" 的右边**(原来在底部操作行)。
 - **详情页标题本身就是去 GitHub 的链接** —— 标题已经明晃晃写着仓库名了,再放一个"在 GitHub 打开"其实有点冗余,让标题自己可点更自然。
   - 补记:那个按钮随后**删掉了**。两个入口做同一件事,迟早会有一个没人用还占地方 —— 既然标题已经能点,就没有留它的理由。详情页头现在是:`[头像] 标题 [Releases] [⋯]`。
+
+### 第二十二轮(2026-09-29):多用户 + GitHub OAuth 登录
+从"单机自用"变成"能给别人用"。这是这个项目最大的一次结构改动。
+
+**数据模型**
+- 新增 `users`(带 `gh_id` / `token`)和 `sessions` 两张表。
+- `starred` / `following` / `events` / `comments` 全部加 `user_id`。
+- **`starred` 和 `following` 的主键变了**(单列 → 复合列),SQLite 改不了主键,只能重建表 —— 和当初给 `events` 加 CHECK 是同一套做法。
+- **迁移**:把老的单用户数据全归给一个占位用户(id=1, login='me')。等你第一次用 GitHub 登录,会自动**认领**它 —— 历史无缝接上,不用手工搬数据。实测 15 个 star / 8 个关注 / 23 条表态 / 1 条评论一条不少。
+  - 教训:**备份 WAL 模式的数据库,不能直接拷 `.db` 文件**。我第一次备份就漏了还在 `-wal` 里的数据(备份比真库小 32KB)。要用 `sqlite3` 的 `backup()` 接口。
+
+**OAuth**
+- `auth.py`:标准的授权码流程(登录跳转 → 回调换 token → 拉资料 → 建会话)。
+- 凭据放 `~/.config/repo-recommender/oauth.env`,**不进仓库**(和 token 一个道理)。
+- 要的权限是 `read:user public_repo` —— 后者是为了点 star(写操作,只读权限不够)。
+- 会话用**随机 token 存表**,不用签名 cookie:能随时删(退出登录 = 删一行),不用管密钥轮换。
+- 回调时校验 `state`(存在 cookie 里),防的是"别人拿你的浏览器偷偷登录他的账号"。
+
+**按人分开**
+- 所有 `/api/me/*`、`events`、`comments`、`recommend` 都按当前登录用户。
+- `recommend` 的口味画像从"全局"变成"这个人的"。
+- 点 star 用**登录者自己的 token**,不再拿站长的 token 替所有人点星。
+
+**服务器**
+- **FastAPI 直接托管前端**(`StaticFiles`),前后端**同一个端口、同源** —— 不用配 CORS,session cookie 也自然生效。
+- 绑 `0.0.0.0`,局域网可访问。
+
+**踩到的坑(值得单独记)**
+- **`app.mount("/")` 必须放在文件最末尾**。我一开始插在文件中间,`/` 兜住了所有路径,导致它之后注册的 `/api/me/starred`、`/api/recommend` 等全部 404 —— 而且返回的是 FastAPI 的"路由不存在"404,不是"没登录"401,很容易误判成权限问题。**路由的顺序就是匹配的优先级**,这类 bug 不报错、只是"接口凭空消失"。
+- 根路由 `@app.get("/")` 会挡住静态托管,顺手删了(接口清单在 `/docs` 里有,不用自己再写一个)。
+
+### 部署笔记:让局域网设备能访问(WSL + Windows 特有的一堆坑)
+这几样都不在仓库里(在 Windows 侧),但**缺一个都不通**,所以记下来。
+
+**目标**:让手机/平板能打开 `http://WIN-7NTQI56SCBG:18080/`。
+
+**① WSL 要开镜像网络** —— `C:\Users\Lenovo\.wslconfig`:
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+默认的 NAT 模式给 WSL 分配一个内网 IP(`172.19.x.x`),局域网设备**访问不到它**。镜像模式让 WSL 直接共享 Windows 的网卡。改完必须 `wsl --shutdown` 才生效。
+
+**② Windows 防火墙要放行** —— WSL 的服务在 Windows 看来是"入站连接",默认被拦:
+```
+netsh advfirewall firewall add rule name="Repos18080" dir=in action=allow protocol=TCP localport=18080 remoteip=localsubnet
+```
+`remoteip=localsubnet` 是特意加的:校园网里不加这个参数 = 对整个校园网开放端口。
+
+**③ 还有第二层防火墙** —— Win11 的 **Hyper-V Firewall** 是 WSL 专用的,入站默认 **Block**,和 Windows 防火墙是两回事:
+```
+New-NetFirewallHyperVRule -Name "Repos18080" -DisplayName "Repos 18080" -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" -Protocol TCP -LocalPorts 18080 -Action Allow
+```
+(那个 GUID 是本机 WSL 的标识,用 `Get-NetFirewallHyperVVMSetting -PolicyStore ActiveStore` 查。)
+
+**④ 用主机名而不是 IP** —— `http://WIN-7NTQI56SCBG:18080`,实测局域网可解析。好处是**换 WiFi 也不用改 OAuth 回调地址**(IP 会变,主机名不会)。
+
+**踩过的坑,值得单独记:**
+- **"从 Windows 访问 Windows 自己的局域网 IP"是个不可靠的测试**。这条路径不通,但局域网设备访问完全正常 —— 我因为这个假信号白折腾了很久。**要验证局域网可达性,就该用另一台设备测**,别用本机访问自己的 IP。
+- WSL 里跑着旧进程时改了网络模式,那个进程可能活在旧的命名空间里 —— **改完网络配置要重启服务,不只是重启 WSL**。
+- 端口 8000 上看到的"占用"其实是 `wslrelay.exe`(WSL 自己的转发头),不是别人占的。但 8000 确实是最常撞车的开发端口,所以换成了 18080。

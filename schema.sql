@@ -1,6 +1,33 @@
 -- P2 存储层:SQLite 表结构
 -- 什么时候被执行:db.py 里的 init_db() 会读这个文件并整段执行
 -- 想手动建表也行:sqlite3 data/repos.db < schema.sql
+--
+-- 这个文件描述的是**全新数据库该有的样子**。
+-- 已有的库怎么升级到这个样子:见 db.py 里的 _migrate_* 系列函数。
+
+-- ============ 用户(多用户的核心)============
+CREATE TABLE IF NOT EXISTS users (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    gh_id       INTEGER UNIQUE,          -- GitHub 的用户 id。它是身份,永不变
+                                         -- (login 可以改,所以不用它当身份)
+    login       TEXT    NOT NULL,
+    name        TEXT,
+    avatar_url  TEXT,
+    token       TEXT,                    -- 这个人的 GitHub access token。
+                                         -- 同步他的 star/关注、替他 star 仓库都要用。
+                                         -- 注意:明文存库 —— 局域网自用可以接受,
+                                         -- 真要给外人用,得先想清楚怎么加密。
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- 会话:登录后发一个随机串放在 cookie 里,这张表记住它属于谁。
+-- 用它而不是签名的 cookie:能随时删(退出登录 = 删一行),不用管密钥轮换。
+CREATE TABLE IF NOT EXISTS sessions (
+    token       TEXT    PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 
 CREATE TABLE IF NOT EXISTS repos (
     id                INTEGER PRIMARY KEY,     -- 直接用 GitHub 的 repo id 当主键(它天然唯一)
@@ -40,9 +67,12 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_date ON repo_snapshots(snapshot_date);
 --   events  = 弱信号/显式反馈(你点"感兴趣/不感兴趣")
 
 CREATE TABLE IF NOT EXISTS starred (
-    repo_id     INTEGER PRIMARY KEY,   -- 一个 repo 只能被 star 一次 → 它就是主键
+    user_id     INTEGER NOT NULL,      -- 谁的收藏(多用户后,同一行数据按人分开)
+    repo_id     INTEGER NOT NULL,
     starred_at  TEXT,                  -- GitHub 给的真实 star 时间(UTC ISO8601)
     first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (user_id, repo_id),    -- 同一个人对同一个 repo 只有一行
+    FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
 -- 注意 starred_at 和 first_seen 是两回事:
@@ -53,11 +83,13 @@ CREATE TABLE IF NOT EXISTS starred (
 
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- 事件流:同一个人可以对同一个 repo 反复表态
+    user_id     INTEGER NOT NULL,                    -- 谁表的态
     repo_id     INTEGER NOT NULL,
     -- neutral = "取消表态"(把之前的表态撤回)。有它才能表达"我不想再标记这个 repo 了",
     -- 否则"取消不感兴趣"无处可写。旧库需要迁移,见 db.py 里的 _migrate_events()。
     action      TEXT    NOT NULL CHECK (action IN ('interested','not_interested','neutral')),
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
 -- 为什么 events 用自增 id 而不是 (repo_id, action) 做主键:
@@ -102,10 +134,11 @@ CREATE TABLE IF NOT EXISTS auto_tags (
 -- 等哪天别人也能评论,这一列就有地方写名字了。现在加,比以后改表省事。
 CREATE TABLE IF NOT EXISTS comments (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,        -- 谁评论的。作者现在从这张表关联出来,不用再存字符串
     repo_id     INTEGER NOT NULL,
-    author      TEXT,
     body        TEXT    NOT NULL,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (repo_id) REFERENCES repos(id)
 );
 
@@ -116,9 +149,12 @@ CREATE INDEX IF NOT EXISTS idx_comments_repo ON comments(repo_id);
 -- 和 starred 一样是"状态表":一个账号一行,重复同步只更新、不新增。
 -- 数据来自 GitHub 的 GET /user/following(读自己的关注列表不需要额外权限)。
 CREATE TABLE IF NOT EXISTS following (
-    login       TEXT PRIMARY KEY,   -- GitHub 用户名,天然唯一,直接当主键
+    user_id     INTEGER NOT NULL,   -- 谁关注的
+    login       TEXT    NOT NULL,   -- 被关注的人
     name        TEXT,
     avatar_url  TEXT,
     html_url    TEXT,
-    first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (user_id, login),   -- 同一个人不会重复关注同一个账号
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );

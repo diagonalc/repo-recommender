@@ -20,6 +20,7 @@
     还是你自己的口味数据太少 —— 否则只能盲调权重。
 """
 import json
+import os
 import sys
 
 import numpy as np
@@ -30,7 +31,7 @@ from features import load_features
 POPULARITY_WEIGHT = 0.1
 
 
-def recommend_for(conn, n=20, offset=0):
+def recommend_for(conn, user_id, n=20, offset=0):
     """算推荐列表。命令行和 HTTP 接口共用这一份逻辑(别写两遍)。
 
     offset 用来"换一批":推荐是按分数排好的长列表,取第 offset 个开始的 n 个。
@@ -47,13 +48,13 @@ def recommend_for(conn, n=20, offset=0):
         raise RuntimeError(str(e))
 
     pos = {rid: i for i, rid in enumerate(ids)}
-    opinions = db.latest_opinions(conn)
+    opinions = db.latest_opinions(conn, user_id)
 
-    # 口味信号 = 我 star 过的 + 我点过"感兴趣"的。
+    # 口味信号 = 这个人 star 过的 + 他点过"感兴趣"的。
     # 两者都是正向偏好,区别只在强度(star 明显比一次点击重)。
     # 这里先一视同仁 —— 因为算的是"最像的那个信号",加权意义不大;
     # 等以后改成"相似度累加"时,再给 star 更高的权重。
-    starred = {r["repo_id"] for r in conn.execute("SELECT repo_id FROM starred")}
+    starred = db.starred_repo_ids(conn, user_id)
     liked = {rid for rid, act in opinions.items() if act == "interested"}
     positive = starred | liked
 
@@ -143,9 +144,11 @@ def recommend_for(conn, n=20, offset=0):
 
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    # 命令行默认看第一个用户(这是给你自己调试用的,不是对外接口)
+    user_id = int(os.environ.get("REPOS_USER", "1"))
     conn = db.get_conn()
     try:
-        items = recommend_for(conn, n)
+        items = recommend_for(conn, user_id, n)
     except RuntimeError as e:
         print(e)
         return

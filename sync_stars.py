@@ -1,33 +1,32 @@
 #!/usr/bin/env python3
-"""P4:同步你自己的 star 历史。
+"""P4:同步某个用户的 star 历史。
 
 用法:
-    python3 sync_stars.py
+    .venv/bin/python sync_stars.py              # 默认同步 1 号用户
+    REPOS_USER=2 .venv/bin/python sync_stars.py # 换个人
 
-关键点:请求头带 Accept: application/vnd.github.star+json,
-GitHub 才会把 star 时间(starred_at)一起给你。
-不带这个头,返回的只有 repo 元数据,时间就丢了 —— 而"什么时候 star 的",
-正是以后算"口味随时间怎么变"的依据。
+token 从哪来:登录时 GitHub 给的那个,**存在 users 表里**。
+不再是全局的 GITHUB_TOKEN —— 多用户之后,每个人用自己的 token 拉自己的数据。
 
-幂等:重复跑多少次,starred 表行数都不变(靠 ON CONFLICT(repo_id) 覆盖)。
+幂等:重复跑多少次,starred 行数都不变(靠 ON CONFLICT(user_id, repo_id) 覆盖)。
 """
+import os
 import time
 
 import requests
 
-from db import (count_repos, count_starred, get_conn, init_db,
-                recent_starred, save_starred, upsert_repos)
-from fetch_repos import TOKEN
+from db import (count_starred, get_conn, get_user, init_db, recent_starred,
+                save_starred, upsert_repos, user_token)
 
 URL = "https://api.github.com/user/starred"
 PER_PAGE = 100
 
 
-def fetch_page(page):
-    """拉一页 star。分页规则和 search 一样:per_page + page,每页最多 100。"""
+def fetch_page(token, page):
+    """拉一页 star。带 star+json 才有真实 star 时间。"""
     headers = {"Accept": "application/vnd.github.star+json"}
-    if TOKEN:
-        headers["Authorization"] = f"token {TOKEN}"
+    if token:
+        headers["Authorization"] = f"token {token}"
     r = requests.get(URL, headers=headers,
                      params={"per_page": PER_PAGE, "page": page}, timeout=30)
     if r.status_code != 200:
@@ -36,39 +35,44 @@ def fetch_page(page):
 
 
 def main():
-    if not TOKEN:
-        print("需要 token:/user/starred 拉的是「你」的数据,未认证拿不到。")
+    conn = get_conn()
+    init_db(conn)
+
+    user_id = int(os.environ.get("REPOS_USER", "1"))
+    user = get_user(conn, user_id)
+    if not user:
+        print(f"没有 id={user_id} 的用户 —— 先在网页上用 GitHub 登录一次")
         return
 
-    items = []
-    page = 1
+    token = user_token(conn, user_id)
+    if not token:
+        print(f"{user['login']} 没有可用的 token,退出后重新登录一次")
+        return
+
+    print(f"同步 {user['login']} 的 star 历史…")
+    items, page = [], 1
     while True:
-        batch = fetch_page(page)
+        batch = fetch_page(token, page)
         if not batch:
             break
         items.extend(batch)
         print(f"  第 {page} 页 +{len(batch)}(累计 {len(items)})")
-        if len(batch) < PER_PAGE:      # 不满一页 = 已经到最后一页了
+        if len(batch) < PER_PAGE:      # 不满一页 = 最后一页
             break
         page += 1
         time.sleep(1)
 
     if not items:
-        print("你还没有 star 过任何 repo。")
+        print("还没有 star 过任何 repo。")
         return
 
     repos = [it["repo"] for it in items if it.get("repo")]
+    upsert_repos(conn, repos)          # 先把 repo 元数据落库(starred 有外键指向它)
+    written = save_starred(conn, user_id, items)
 
-    conn = get_conn()
-    init_db(conn)
-    upsert_repos(conn, repos)          # 先把 repo 元数据落库(starred 有外键指向 repos.id)
-    written = save_starred(conn, items)
-
-    print(f"\nstar 落库 {written} 行;starred 表共 {count_starred(conn)} 行")
-    print(f"repos 表共 {count_repos(conn)} 行")
-
+    print(f"\nstar 落库 {written} 行;{user['login']} 共 {count_starred(conn, user_id)} 个")
     print("\n最近 10 个 star(按 star 时间倒序):")
-    for row in recent_starred(conn, 10):
+    for row in recent_starred(conn, user_id, 10):
         when = (row["starred_at"] or "时间未知")[:10]
         print(f"  {when}  {row['full_name']}  ({row['language']})  ★{row['stargazers_count']}")
 

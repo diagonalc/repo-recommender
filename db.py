@@ -8,6 +8,7 @@
 """
 import json
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 
@@ -126,6 +127,163 @@ def _migrate_events(conn):
     print("[migrate] events 表已重建,现在支持 neutral(取消表态)")
 
 
+def _table_columns(conn, table):
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def ensure_local_user(conn):
+    """保证有一个"我"的占位用户,返回它的 id。
+
+    升级场景:老库里的 star / 关注 / 表态都是单用户的,没有"谁"这一列。
+    迁移时把它们全归给这个占位用户。等你第一次用 GitHub 登录,
+    会自动认领它(见 upsert_user),历史就接上了 —— 不用手工搬数据。
+    """
+    row = conn.execute(
+        "SELECT id FROM users WHERE gh_id IS NULL ORDER BY id LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    cur = conn.execute("INSERT INTO users (login) VALUES ('me')")
+    conn.commit()
+    return cur.lastrowid
+
+
+def upsert_user(conn, gh):
+    """按 GitHub 身份找用户,没有就新建。返回 (user_id, 是否新建)。
+
+    gh 形如 {id, login, name, avatar_url, token}。
+    """
+    row = conn.execute("SELECT id FROM users WHERE gh_id = ?",
+                       (gh.get("id"),)).fetchone()
+    if row:
+        conn.execute("""UPDATE users SET login=?, name=?, avatar_url=?, token=?
+                        WHERE id=?""",
+                     (gh.get("login"), gh.get("name"), gh.get("avatar_url"),
+                      gh.get("token"), row["id"]))
+        conn.commit()
+        return row["id"], False
+
+    # 没有这个人 —— 看看有没有等着被认领的占位用户(单用户升级上来的那种)
+    ph = conn.execute(
+        "SELECT id FROM users WHERE gh_id IS NULL ORDER BY id LIMIT 1").fetchone()
+    if ph:
+        conn.execute("""UPDATE users SET gh_id=?, login=?, name=?, avatar_url=?, token=?
+                        WHERE id=?""",
+                     (gh.get("id"), gh.get("login"), gh.get("name"),
+                      gh.get("avatar_url"), gh.get("token"), ph["id"]))
+        conn.commit()
+        return ph["id"], False
+
+    cur = conn.execute(
+        "INSERT INTO users (gh_id, login, name, avatar_url, token) VALUES (?,?,?,?,?)",
+        (gh.get("id"), gh.get("login"), gh.get("name"),
+         gh.get("avatar_url"), gh.get("token")))
+    conn.commit()
+    return cur.lastrowid, True
+
+
+def get_user(conn, user_id):
+    return conn.execute(
+        "SELECT id, gh_id, login, name, avatar_url FROM users WHERE id = ?",
+        (user_id,)).fetchone()
+
+
+def user_token(conn, user_id):
+    row = conn.execute("SELECT token FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["token"] if row else None
+
+
+# ---------------- 会话 ----------------
+
+def create_session(conn, user_id):
+    """发一个新会话,返回那个随机串(它会被放进 cookie)。"""
+    token = secrets.token_urlsafe(32)
+    conn.execute("INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user_id))
+    conn.commit()
+    return token
+
+
+def user_by_session(conn, token):
+    """按会话串找人。找不到(或没传)返回 None。"""
+    if not token:
+        return None
+    return conn.execute("""
+        SELECT u.id, u.gh_id, u.login, u.name, u.avatar_url
+        FROM sessions AS s JOIN users AS u ON u.id = s.user_id
+        WHERE s.token = ?""", (token,)).fetchone()
+
+
+def delete_session(conn, token):
+    if token:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+
+
+def count_users(conn):
+    return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+
+def _migrate_multiuser(conn):
+    """把单用户的表升级成多用户:加 user_id,老数据归给"我"。
+
+    starred / following 的**主键变了**(单列 → 复合列),SQLite 改不了主键,
+    只能重建表 —— 和当初给 events 加 CHECK 是同一套做法。
+
+    events / comments 只是加一列,用 ALTER TABLE 就行,不用重建。
+    """
+    cols = _table_columns(conn, "starred")
+    if not cols or "user_id" in cols:
+        return                     # 已经是新结构(或者全新的库)
+
+    print("[migrate] 升级到多用户结构…")
+    me = ensure_local_user(conn)
+
+    conn.executescript(f"""
+        ALTER TABLE starred RENAME TO starred_old;
+        CREATE TABLE starred (
+            user_id     INTEGER NOT NULL,
+            repo_id     INTEGER NOT NULL,
+            starred_at  TEXT,
+            first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            PRIMARY KEY (user_id, repo_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (repo_id) REFERENCES repos(id)
+        );
+        INSERT INTO starred (user_id, repo_id, starred_at, first_seen)
+            SELECT {me}, repo_id, starred_at, first_seen FROM starred_old;
+        DROP TABLE starred_old;
+    """)
+
+    cols = _table_columns(conn, "following")
+    if cols and "user_id" not in cols:
+        conn.executescript(f"""
+            ALTER TABLE following RENAME TO following_old;
+            CREATE TABLE following (
+                user_id     INTEGER NOT NULL,
+                login       TEXT    NOT NULL,
+                name        TEXT,
+                avatar_url  TEXT,
+                html_url    TEXT,
+                first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                PRIMARY KEY (user_id, login),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            INSERT INTO following (user_id, login, name, avatar_url, html_url, first_seen)
+                SELECT {me}, login, name, avatar_url, html_url, first_seen
+                FROM following_old;
+            DROP TABLE following_old;
+        """)
+
+    for tbl in ("events", "comments"):
+        c = _table_columns(conn, tbl)
+        if c and "user_id" not in c:
+            # ADD COLUMN 加不了 NOT NULL(已有行没值),所以先加可空列再回填
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER")
+            conn.execute(f"UPDATE {tbl} SET user_id = ? WHERE user_id IS NULL", (me,))
+
+    conn.commit()
+    print(f"[migrate] 完成,老数据都归给了 user_id={me}")
+
+
 def _migrate_comments_add_author(conn):
     """给老的 comments 表补上 author 列。
 
@@ -146,6 +304,7 @@ def init_db(conn):
     conn.commit()
     _migrate_events(conn)
     _migrate_comments_add_author(conn)
+    _migrate_multiuser(conn)     # 放最后:它给 events/comments 加 user_id,别被前面的重建覆盖掉
 
 
 def upsert_repos(conn, repos):
@@ -190,21 +349,21 @@ def count_snapshots(conn):
 
 # ---------------- P4:star 历史 + 行为事件 ----------------
 
-# starred 是"状态表":一个 repo 一行。重复同步 = 覆盖时间,不会长出第二行。
+# starred 是"状态表":一个人对一个 repo 一行。重复同步 = 覆盖时间,不会长出第二行。
 STARRED_SQL = """
-INSERT INTO starred (repo_id, starred_at)
-VALUES (?, ?)
-ON CONFLICT(repo_id) DO UPDATE SET
+INSERT INTO starred (user_id, repo_id, starred_at)
+VALUES (?, ?, ?)
+ON CONFLICT(user_id, repo_id) DO UPDATE SET
     starred_at = excluded.starred_at
 """
 
 # events 是"流水表":只追加,永远不更新、不覆盖
-EVENT_SQL = "INSERT INTO events (repo_id, action) VALUES (?, ?)"
+EVENT_SQL = "INSERT INTO events (user_id, repo_id, action) VALUES (?, ?, ?)"
 # neutral = 取消表态:不是"不喜欢",而是"把之前的标记撤回"
 EVENT_ACTIONS = ("interested", "not_interested", "neutral")
 
 
-def save_starred(conn, items):
+def save_starred(conn, user_id, items):
     """items = /user/starred 的返回:[{"starred_at": ..., "repo": {...}}, ...]。
 
     返回写入行数。starred_at 可能是 None(没带 star+json 头),照存不误。
@@ -213,32 +372,36 @@ def save_starred(conn, items):
     for it in items:
         repo = it.get("repo") or {}
         if repo.get("id"):
-            rows.append((repo["id"], to_utc_iso(it.get("starred_at"))))
+            rows.append((user_id, repo["id"], to_utc_iso(it.get("starred_at"))))
     before = conn.total_changes
     conn.executemany(STARRED_SQL, rows)
     conn.commit()
     return conn.total_changes - before
 
 
-def count_starred(conn):
-    return conn.execute("SELECT COUNT(*) FROM starred").fetchone()[0]
+def count_starred(conn, user_id=None):
+    if user_id is None:
+        return conn.execute("SELECT COUNT(*) FROM starred").fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM starred WHERE user_id = ?",
+                        (user_id,)).fetchone()[0]
 
 
-def recent_starred(conn, limit=10):
+def recent_starred(conn, user_id, limit=10):
     """按 star 时间倒序 —— 这就是"我记得我 star 过什么"的查询。"""
     return conn.execute("""
         SELECT r.full_name, r.language, r.stargazers_count, s.starred_at
         FROM starred AS s
         JOIN repos   AS r ON r.id = s.repo_id
+        WHERE s.user_id = ?
         ORDER BY s.starred_at DESC
-        LIMIT ?""", (limit,)).fetchall()
+        LIMIT ?""", (user_id, limit)).fetchall()
 
 
-def add_event(conn, repo_id, action):
-    """记一条反馈。action 只能是 interested / not_interested(和表上的 CHECK 一致)。"""
+def add_event(conn, user_id, repo_id, action):
+    """记一条反馈。action 只能是 interested / not_interested / neutral。"""
     if action not in EVENT_ACTIONS:
         raise ValueError(f"action 只能是 {EVENT_ACTIONS},收到 {action!r}")
-    conn.execute(EVENT_SQL, (repo_id, action))
+    conn.execute(EVENT_SQL, (user_id, repo_id, action))
     conn.commit()
 
 
@@ -255,27 +418,35 @@ def recent_events(conn, limit=10):
         LIMIT ?""", (limit,)).fetchall()
 
 
-# "当前态度" = 每个 repo 最后一条事件。
+# "当前态度" = 这个人对每个 repo 的最后一条事件。
 # 事件表是流水(只追加、不改不删),所以"改主意"就再写一条 —— 历史留全,
 # 而"现在到底是什么态度"用 id 最大的那条回答。
+# 注意子查询里也要带 user_id —— 只按 repo_id 取最大 id 的话,
+# 会拿到"别人"的表态。
 _LATEST_OPINION_SQL = """
 SELECT e.repo_id, e.action
 FROM events AS e
-WHERE e.id = (SELECT MAX(id) FROM events WHERE repo_id = e.repo_id)
+WHERE e.user_id = ?
+  AND e.id = (SELECT MAX(id) FROM events
+              WHERE repo_id = e.repo_id AND user_id = e.user_id)
 """
 
 
-def latest_opinions(conn):
-    """{repo_id: action} —— 每个 repo 当前的最终态度(最新一条说了算)。"""
-    return {row["repo_id"]: row["action"] for row in conn.execute(_LATEST_OPINION_SQL)}
+def latest_opinions(conn, user_id):
+    """{repo_id: action} —— 这个人对每个 repo 当前的最终态度。"""
+    return {row["repo_id"]: row["action"]
+            for row in conn.execute(_LATEST_OPINION_SQL, (user_id,))}
 
 
-def opinion_map(conn):
+def opinion_map(conn, user_id):
     """{full_name: action} —— 给前端标按钮状态用。"""
-    return {row["full_name"]: row["action"] for row in conn.execute(f"""
+    return {row["full_name"]: row["action"] for row in conn.execute("""
         SELECT r.full_name, e.action
         FROM events AS e JOIN repos AS r ON r.id = e.repo_id
-        WHERE e.id = (SELECT MAX(id) FROM events WHERE repo_id = e.repo_id)""")}
+        WHERE e.user_id = ?
+          AND e.id = (SELECT MAX(id) FROM events
+                      WHERE repo_id = e.repo_id AND user_id = e.user_id)""",
+        (user_id,))}
 
 
 # ---------------- P5:给 API 用的查询 ----------------
@@ -428,17 +599,20 @@ def count_auto_tags(conn):
 
 # ---------------- 详情页的笔记 ----------------
 
-def add_comment(conn, repo_id, body, author=None):
-    conn.execute("INSERT INTO comments (repo_id, author, body) VALUES (?, ?, ?)",
-                 (repo_id, author, body))
+def add_comment(conn, user_id, repo_id, body):
+    conn.execute("INSERT INTO comments (user_id, repo_id, body) VALUES (?, ?, ?)",
+                 (user_id, repo_id, body))
     conn.commit()
 
 
 def list_comments(conn, repo_id, limit=200):
-    """某个 repo 的评论,新的在前。"""
-    return conn.execute(
-        "SELECT id, author, body, created_at FROM comments WHERE repo_id = ? "
-        "ORDER BY id DESC LIMIT ?", (repo_id, limit)).fetchall()
+    """某个 repo 的评论,新的在前。**带上评论者是谁** —— 这正是作者字段(users)的用处。"""
+    return conn.execute("""
+        SELECT c.id, c.body, c.created_at,
+               u.login AS author_login, u.name AS author_name, u.avatar_url
+        FROM comments AS c LEFT JOIN users AS u ON u.id = c.user_id
+        WHERE c.repo_id = ?
+        ORDER BY c.id DESC LIMIT ?""", (repo_id, limit)).fetchall()
 
 
 def count_comments(conn):
@@ -448,18 +622,18 @@ def count_comments(conn):
 # ---------------- 关注的开发者 ----------------
 
 FOLLOWING_SQL = """
-INSERT INTO following (login, name, avatar_url, html_url)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(login) DO UPDATE SET
+INSERT INTO following (user_id, login, name, avatar_url, html_url)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(user_id, login) DO UPDATE SET
     name       = excluded.name,
     avatar_url = excluded.avatar_url,
     html_url   = excluded.html_url
 """
 
 
-def save_following(conn, users):
+def save_following(conn, user_id, users):
     """users = GitHub /user/following 的返回。返回写入行数。"""
-    rows = [(u.get("login"), u.get("name"), u.get("avatar_url"), u.get("html_url"))
+    rows = [(user_id, u.get("login"), u.get("name"), u.get("avatar_url"), u.get("html_url"))
             for u in users if u.get("login")]
     before = conn.total_changes
     conn.executemany(FOLLOWING_SQL, rows)
@@ -477,15 +651,15 @@ FOLLOWING_SORTS = {
 }
 
 
-def list_following(conn, limit=500, sort="name", q=None):
-    """关注的人。支持按名字/关注时间排序,以及按关键词过滤。"""
+def list_following(conn, user_id, limit=500, sort="name", q=None):
+    """这个人关注的人。支持按名字/关注时间排序,以及按关键词过滤。"""
     order = FOLLOWING_SORTS.get(sort, FOLLOWING_SORTS["name"])
 
-    where, params = "", []
+    where, params = "WHERE user_id = ?", [user_id]
     if q:
         like = f"%{q}%"
-        where = "WHERE login LIKE ? OR IFNULL(name, '') LIKE ?"
-        params = [like, like]
+        where += " AND (login LIKE ? OR IFNULL(name, '') LIKE ?)"
+        params += [like, like]
 
     sql = (f"SELECT login, name, avatar_url, html_url, first_seen FROM following "
            f"{where} ORDER BY {order} LIMIT ?")
@@ -493,8 +667,11 @@ def list_following(conn, limit=500, sort="name", q=None):
     return conn.execute(sql, tuple(params)).fetchall()
 
 
-def count_following(conn):
-    return conn.execute("SELECT COUNT(*) AS n FROM following").fetchone()["n"]
+def count_following(conn, user_id=None):
+    if user_id is None:
+        return conn.execute("SELECT COUNT(*) AS n FROM following").fetchone()["n"]
+    return conn.execute("SELECT COUNT(*) AS n FROM following WHERE user_id = ?",
+                        (user_id,)).fetchone()["n"]
 
 
 def comment_counts(conn, repo_ids):
@@ -557,12 +734,19 @@ def repo_history(conn, repo_id):
         "WHERE repo_id = ? ORDER BY snapshot_date", (repo_id,)).fetchall()
 
 
-def starred_list(conn, limit=200):
+def starred_list(conn, user_id, limit=200):
     return conn.execute("""
         SELECT r.id, r.full_name, r.description, r.language, r.html_url,
                r.stargazers_count, s.starred_at
         FROM starred AS s JOIN repos AS r ON r.id = s.repo_id
-        ORDER BY s.starred_at DESC LIMIT ?""", (limit,)).fetchall()
+        WHERE s.user_id = ?
+        ORDER BY s.starred_at DESC LIMIT ?""", (user_id, limit)).fetchall()
+
+
+def starred_repo_ids(conn, user_id):
+    """这个人 star 过的所有 repo id —— 推荐要用它当口味信号。"""
+    return {r["repo_id"] for r in conn.execute(
+        "SELECT repo_id FROM starred WHERE user_id = ?", (user_id,))}
 
 
 def find_repo_id(conn, full_name):
@@ -657,10 +841,10 @@ def repo_delta(conn, repo_id):
     return rows[0]["stargazers_count"] - rows[1]["stargazers_count"]
 
 
-def starred_at_of(conn, repo_id):
-    """我什么时候 star 的它;没 star 过返回 None。"""
-    row = conn.execute("SELECT starred_at FROM starred WHERE repo_id = ?",
-                       (repo_id,)).fetchone()
+def starred_at_of(conn, user_id, repo_id):
+    """这个人什么时候 star 的它;没 star 过返回 None。"""
+    row = conn.execute("SELECT starred_at FROM starred WHERE user_id = ? AND repo_id = ?",
+                       (user_id, repo_id)).fetchone()
     return row["starred_at"] if row else None
 
 

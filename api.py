@@ -9,17 +9,24 @@
 """
 import heapq
 import json
+import os
 import re
 import time
 from contextlib import asynccontextmanager
 
 import requests
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import auth
 import db
+
+COOKIE = "repos_sid"        # 会话 cookie:登录后发,退出登录删
+STATE_COOKIE = "repos_state"  # OAuth 的防 CSRF 随机串,只在登录过程中存活
 
 
 @asynccontextmanager
@@ -41,6 +48,100 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def current_user(request: Request):
+    """当前登录的人;没登录返回 None。"""
+    conn = db.get_conn()
+    return db.user_by_session(conn, request.cookies.get(COOKIE))
+
+
+def require_user(request: Request):
+    """要登录才能用的接口,先过这一道。"""
+    user = current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return user
+
+
+# ---------------- 登录 ----------------
+
+@app.get("/auth/login")
+def auth_login(request: Request):
+    """跳去 GitHub 授权。"""
+    if not auth.configured():
+        raise HTTPException(
+            status_code=503,
+            detail="还没配置 OAuth 凭据。把 Client ID / Secret 填进 "
+                   "~/.config/repo-recommender/oauth.env,然后重试")
+    client_id, _ = auth.credentials()
+    state = auth.new_state()
+    # 回调地址必须和 GitHub OAuth App 里登记的一模一样,否则会被拒
+    redirect_uri = str(request.base_url).rstrip("/") + auth.CALLBACK_PATH
+
+    resp = RedirectResponse(auth.authorize_url(client_id, redirect_uri, state))
+    resp.set_cookie(STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
+    return resp
+
+
+@app.get("/auth/callback")
+def auth_callback(request: Request, code: str = None, state: str = None,
+                  error: str = None):
+    """GitHub 带 code 回到这里。"""
+    if error:
+        raise HTTPException(status_code=400, detail=f"GitHub 拒绝了登录:{error}")
+    if not code:
+        raise HTTPException(status_code=400, detail="没收到 code")
+
+    # state 必须和登录时发出去的一致 —— 防的是"别人拿你的浏览器偷偷登录他的账号"
+    expect = request.cookies.get(STATE_COOKIE)
+    if not expect or expect != state:
+        raise HTTPException(status_code=400, detail="state 不匹配(可能是跨站攻击,或者 cookie 丢了)")
+
+    redirect_uri = str(request.base_url).rstrip("/") + auth.CALLBACK_PATH
+    try:
+        token = auth.exchange_code(code, redirect_uri)
+        gh = auth.fetch_user(token)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    conn = db.get_conn()
+    db.init_db(conn)                      # 保证用户表在(首次登录时可能还没建过)
+    user_id, _is_new = db.upsert_user(conn, gh)
+    sid = db.create_session(conn, user_id)
+
+    resp = RedirectResponse("/")
+    resp.delete_cookie(STATE_COOKIE)
+    resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax",
+                    max_age=60 * 60 * 24 * 30)   # 30 天
+    return resp
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    sid = request.cookies.get(COOKIE)
+    if sid:
+        db.delete_session(db.get_conn(), sid)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+@app.get("/api/me")
+def whoami(request: Request):
+    """当前登录的是谁。没登录也返回 200(前端要靠它决定显示登录还是头像)。"""
+    user = current_user(request)
+    if user is None:
+        return {"logged_in": False, "oauth_ready": auth.configured()}
+    return {
+        "logged_in": True,
+        "user": {
+            "login": user["login"],
+            "name": user["name"],
+            "avatar_url": user["avatar_url"],
+            "html_url": f"https://github.com/{user['login']}",
+        },
+    }
 
 
 def row_to_repo(row):
@@ -116,14 +217,9 @@ class EventIn(BaseModel):
     action: str
 
 
-@app.get("/")
-def root():
-    return {"hint": "接口都在这儿:/docs", "endpoints": [
-        "/api/repos?sort=stars|trending&lang=python",
-        "/api/repos/{owner}/{repo}",
-        "/api/me/starred",
-        "POST /api/events",
-    ]}
+# 注意:这里曾经有一个 @app.get("/") 返回接口清单 —— 删掉了。
+# 它会挡住末尾挂载的静态文件,导致打开网站看到一坨 JSON 而不是页面。
+# 接口清单在 /docs 里有,不用自己再写一个。
 
 
 @app.get("/api/repos")
@@ -287,7 +383,7 @@ def _fetch_readme_now(conn, repo_id, full_name):
 
 
 @app.get("/api/repos/{full_name:path}")
-def repo_detail(full_name: str):
+def repo_detail(request: Request, full_name: str):
     """单个 repo 的详情页所需的全部数据。
 
     一次请求给齐:元数据 + README 正文 + 快照历史 + 我的态度 + 相似 repo。
@@ -316,8 +412,14 @@ def repo_detail(full_name: str):
     out["readme"] = readable(readme)          # 详情页直接展示这段,不再靠猜
     out["history"] = [dict(h) for h in db.repo_history(conn, rid)]
     out["delta"] = db.repo_delta(conn, rid)
-    out["starred_at"] = db.starred_at_of(conn, rid)
-    out["opinion"] = db.latest_opinions(conn).get(rid)
+    # 详情页不强制登录,但"你 star 过没""你表过什么态"是个性化的 —— 登录了才有
+    viewer = current_user(request)
+    if viewer:
+        out["starred_at"] = db.starred_at_of(conn, viewer["id"], rid)
+        out["opinion"] = db.latest_opinions(conn, viewer["id"]).get(rid)
+    else:
+        out["starred_at"] = None
+        out["opinion"] = None
     out["similar"] = _similar_items(conn, rid)
     out["releases_url"] = (out.get("html_url") or "").rstrip("/") + "/releases"
     # 笔记直接并进详情响应 —— 详情页一次请求拿齐,不用再发一次
@@ -332,7 +434,7 @@ class CommentIn(BaseModel):
 
 
 @app.post("/api/comments/{full_name:path}", status_code=201)
-def post_comment(full_name: str, c: CommentIn):
+def post_comment(request: Request, full_name: str, c: CommentIn):
     """给某个 repo 写一条笔记。
 
     路径放在 /api/comments/ 而不是 /api/repos/... 下面:
@@ -352,38 +454,38 @@ def post_comment(full_name: str, c: CommentIn):
     if repo_id is None:
         raise HTTPException(status_code=404, detail=f"库里没有 {full_name}")
 
-    db.add_comment(conn, repo_id, body)
+    user = require_user(request)       # 评论要署名的,必须先知道你是谁
+    db.add_comment(conn, user["id"], repo_id, body)
     return {"ok": True, "full_name": full_name,
             "items": [dict(r) for r in db.list_comments(conn, repo_id)]}
 
 
 @app.post("/api/star/{full_name:path}")
-def star_repo(full_name: str):
+def star_repo(request: Request, full_name: str):
     """真的去 GitHub 给这个 repo 点 star(不是本地标记)。
 
-    前提:token 要有 star 权限。只读 token 会被 GitHub 403 拒掉 ——
-    所以这里把 GitHub 的原话带出来,并说清该怎么办,
-    否则前端只能显示一句"失败",无从下手。
+    **用登录者自己的 token** —— 多用户之后不能拿站长的 token 替所有人点星。
     """
-    from fetch_repos import TOKEN
-
-    if not TOKEN:
-        raise HTTPException(status_code=409, detail="没配置 token,无法 star")
+    user = require_user(request)
+    conn = db.get_conn()
+    token = db.user_token(conn, user["id"])
+    if not token:
+        raise HTTPException(status_code=409,
+                            detail="你的账号没有可用的 GitHub token,退出后重新登录一次")
 
     r = requests.put(
         f"https://api.github.com/user/starred/{full_name}",
-        headers={"Authorization": f"token {TOKEN}",
+        headers={"Authorization": f"token {token}",
                  "Accept": "application/vnd.github+json",
                  "Content-Length": "0"},
         timeout=30)
 
     if r.status_code == 204:
         # 本地也记一笔,界面立刻能反映。以后跑 sync_stars 会用真实时间覆盖。
-        conn = db.get_conn()
         repo_id = db.find_repo_id(conn, full_name)
         if repo_id:
-            db.save_starred(conn, [{"repo": {"id": repo_id},
-                                    "starred_at": db.today_utc()}])
+            db.save_starred(conn, user["id"], [{"repo": {"id": repo_id},
+                                                "starred_at": db.today_utc()}])
         return {"ok": True, "full_name": full_name}
 
     # 权限不足时 GitHub 回的是 404,不是 403 —— 它故意不说资源到底存不存在。
@@ -405,18 +507,21 @@ def star_repo(full_name: str):
     raise HTTPException(status_code=502, detail=f"GitHub 返回 {r.status_code}")
 
 
+
+
 @app.get("/api/me/starred")
-def my_starred(limit: int = 200):
-    """我 star 过的 repo,按 star 时间倒序 —— 这就是推荐系统的"口味来源"。"""
+def my_starred(request: Request, limit: int = 200):
+    """**当前登录的人** star 过的 repo,按 star 时间倒序 —— 推荐系统的口味来源。"""
+    user = require_user(request)
     conn = db.get_conn()
-    rows = db.starred_list(conn, limit=max(1, min(limit, 1000)))
+    rows = db.starred_list(conn, user["id"], limit=max(1, min(limit, 1000)))
     items = [dict(r) for r in rows]
     attach_extras(conn, items)
     return {"count": len(items), "items": items}
 
 
 @app.get("/api/recommend")
-def api_recommend(limit: int = 20, offset: int = 0):
+def api_recommend(request: Request, limit: int = 20, offset: int = 0):
     """P6:内容相似推荐。
 
     offset 用来"换一批":推荐是按分数排好的一个长列表,把 offset 往后移
@@ -428,11 +533,12 @@ def api_recommend(limit: int = 20, offset: int = 0):
     """
     from recommend import recommend_for
 
+    user = require_user(request)          # 推荐是"给你"的,必须知道你是谁
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     conn = db.get_conn()
     try:
-        items = recommend_for(conn, limit, offset)
+        items = recommend_for(conn, user["id"], limit, offset)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {
@@ -444,7 +550,7 @@ def api_recommend(limit: int = 20, offset: int = 0):
 
 
 @app.get("/api/me/following")
-def my_following(limit: int = 500, sort: str = "name", q: str = None):
+def my_following(request: Request, limit: int = 500, sort: str = "name", q: str = None):
     """我关注的开发者,支持排序和搜索。
 
     数据来自 GitHub 的 following 列表(由 sync_following.py 同步)——
@@ -454,8 +560,10 @@ def my_following(limit: int = 500, sort: str = "name", q: str = None):
     sort=recent  按关注时间,新的在前
     sort=oldest  按关注时间,旧的在前
     """
+    user = require_user(request)
     conn = db.get_conn()
-    rows = db.list_following(conn, max(1, min(limit, 2000)), sort=sort, q=(q or "").strip() or None)
+    rows = db.list_following(conn, user["id"], max(1, min(limit, 2000)),
+                             sort=sort, q=(q or "").strip() or None)
     return {
         "count": len(rows),
         "sort": sort,
@@ -548,8 +656,9 @@ def translate(text: str, to: str = "zh"):
 
 
 @app.post("/api/events", status_code=201)
-def post_event(ev: EventIn):
-    """记一条反馈。前端点 [感兴趣] / [不感兴趣] 就调这里。"""
+def post_event(request: Request, ev: EventIn):
+    """记一条反馈。前端点心/不感兴趣就调这里。"""
+    user = require_user(request)
     if ev.action not in db.EVENT_ACTIONS:
         raise HTTPException(status_code=422,
                             detail=f"action 只能是 {list(db.EVENT_ACTIONS)}")
@@ -558,7 +667,7 @@ def post_event(ev: EventIn):
     if repo_id is None:
         raise HTTPException(status_code=404,
                             detail=f"库里没有 {ev.full_name}")
-    db.add_event(conn, repo_id, ev.action)
+    db.add_event(conn, user["id"], repo_id, ev.action)
     return {"ok": True, "full_name": ev.full_name, "action": ev.action}
 
 
@@ -569,10 +678,21 @@ def list_events(limit: int = 20):
 
 
 @app.get("/api/opinions")
-def my_opinions():
-    """{full_name: action} —— 每个 repo 当前的最终态度(最新一条事件说了算)。
+def my_opinions(request: Request):
+    """{full_name: action} —— **当前登录的人**对每个 repo 的最终态度。
 
-    前端拿它给按钮标选中状态:这样你改过答案之后,刷新页面还能看出自己选的是哪个。
+    前端拿它给按钮标选中状态:这样改过答案之后,刷新页面还能看出自己选的是哪个。
     """
+    user = require_user(request)
     conn = db.get_conn()
-    return {"opinions": db.opinion_map(conn)}
+    return {"opinions": db.opinion_map(conn, user["id"])}
+
+
+# ---------------- 前端静态文件 ----------------
+# **必须放在文件最末尾。** "/" 会兜住所有路径,只要它在任何一个 API 路由之前注册,
+# 后面的接口就永远匹配不到(第一次就踩了这个坑:插在文件中间,导致它之后注册的
+# /api/me/starred、/api/recommend 等全部 404)。
+# 好处是前后端**同一个端口、同源** —— 不用配 CORS,session cookie 也能正常带。
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+if os.path.isdir(_WEB_DIR):
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
