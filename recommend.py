@@ -66,8 +66,10 @@ def recommend_for(conn, user_id, n=20, offset=0):
 
     my_pos = [pos[r] for r in positive if r in pos]
     if not my_pos:
-        raise RuntimeError(
-            "还没有口味信号。先跑 sync_stars.py,或在页面上点几个[感兴趣]")
+        # 新用户一定会撞上这条 —— 提示要面向网页用户,别丢一句命令行脚本给他。
+        # 注意:别在这里承诺"会自动同步 star" —— 同步目前还没接进定时任务,
+        # 写了就是骗人。等真接上了再改这句话。
+        raise RuntimeError("还没有你的口味数据。去 Trending 页点几个[感兴趣]试试")
 
     # (我的 k 个正向信号) × (全部 repo) → 相似度矩阵
     sims = np.asarray((matrix[my_pos] @ matrix.T).todense())

@@ -76,8 +76,10 @@ def auth_login(request: Request):
                    "~/.config/repo-recommender/oauth.env,然后重试")
     client_id, _ = auth.credentials()
     state = auth.new_state()
-    # 回调地址必须和 GitHub OAuth App 里登记的一模一样,否则会被拒
-    redirect_uri = str(request.base_url).rstrip("/") + auth.CALLBACK_PATH
+    # 回调地址必须和 GitHub OAuth App 里登记的一模一样,否则会被拒。
+    # 注意别自己拼 —— 走 auth.redirect_uri() 统一处理反向代理那层
+    # (隧道后面请求是 http,而用户看到的是 https,直接推会错)。
+    redirect_uri = auth.redirect_uri(str(request.base_url))
 
     resp = RedirectResponse(auth.authorize_url(client_id, redirect_uri, state))
     resp.set_cookie(STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
@@ -98,7 +100,7 @@ def auth_callback(request: Request, code: str = None, state: str = None,
     if not expect or expect != state:
         raise HTTPException(status_code=400, detail="state 不匹配(可能是跨站攻击,或者 cookie 丢了)")
 
-    redirect_uri = str(request.base_url).rstrip("/") + auth.CALLBACK_PATH
+    redirect_uri = auth.redirect_uri(str(request.base_url))
     try:
         token = auth.exchange_code(code, redirect_uri)
         gh = auth.fetch_user(token)

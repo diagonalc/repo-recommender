@@ -409,6 +409,18 @@ function currentRoute() {
   };
 }
 
+// 每个页面能排的字段不同。切页面时如果当前排序在目标页面不合法,就换成默认的。
+// 否则会把 "similarity"(推荐页专有的选项)发给 Trending 或标签页,接口直接 422。
+//
+// ⚠️ 抽成函数是因为上次我只在 Trending 那条分支里修了,漏了标签页 ——
+// 表现就是"从推荐页点标签会报错"。**这种校验要在所有入口都过一遍**,
+// 写在分支里迟早漏。
+function fixSortFor(tab) {
+  if (!sortsFor(tab).includes(state.sort)) {
+    state.sort = tab === "recommend" ? "similarity" : "trending";
+  }
+}
+
 function route() {
   const { parts, qs } = currentRoute();
   const head = parts[0] || "recommend";
@@ -427,6 +439,7 @@ function route() {
   if (head === "tag" && parts[1]) {
     state.tags = parts[1].split(",").map(decodeURIComponent).filter(Boolean);
     state.tab = "tag";
+    fixSortFor(state.tab);          // ← 补上:这条分支以前漏了,从推荐页点标签就报错
     setActiveTab(null);
     setTitle("tab_tags");
     loadList();
@@ -435,13 +448,7 @@ function route() {
 
   state.tags = [];
   state.tab = TABS.includes(head) ? head : "recommend";
-
-  // 每个页面能排的字段不同。切页面时如果当前排序在这个页面不合法,就换成默认的 ——
-  // 否则会把 "similarity"(推荐页专有的选项)发给 Trending,接口直接 422。
-  // 这段逻辑在引入路由时被我弄丢了,表现就是"点 Trending 页面出错"。
-  if (!sortsFor(state.tab).includes(state.sort)) {
-    state.sort = state.tab === "recommend" ? "similarity" : "trending";
-  }
+  fixSortFor(state.tab);
 
   if (state.tab === "search") {
     state.q = qs.get("q") || "";

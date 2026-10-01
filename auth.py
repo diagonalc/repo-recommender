@@ -27,6 +27,23 @@ USER_API = "https://api.github.com/user"
 ENV_PATH = os.path.expanduser("~/.config/repo-recommender/oauth.env")
 CALLBACK_PATH = "/auth/callback"
 
+# 公开访问地址(线上必设)。
+#
+# 为什么不能从请求里推:放在反向代理/隧道后面时,请求到达 uvicorn 的样子
+# 和用户看到的不一样 —— Cloudflare 在边缘终止了 HTTPS,转发给本地的是**明文 http**,
+# 于是 request.base_url 算出来是 http://... 而用户看到的是 https://...
+# 两者对不上,GitHub 会以 redirect_uri mismatch 拒绝。
+#
+# 所以线上直接把"用户实际打开的地址"配在这儿:
+#   REPOS_PUBLIC_BASE=https://diagonalc.dpdns.org
+PUBLIC_BASE = os.environ.get("REPOS_PUBLIC_BASE", "").rstrip("/")
+
+
+def redirect_uri(request_base_url):
+    """算 OAuth 回调地址:配了 PUBLIC_BASE 就用它,没配才从请求里推(本地开发用)。"""
+    base = PUBLIC_BASE or (request_base_url or "").rstrip("/")
+    return base + CALLBACK_PATH
+
 # 要哪些权限:
 #   read:user   读用户资料(昵称、头像)
 #   public_repo 给公开仓库点 star —— 这是**写操作**,read:user 不够。
