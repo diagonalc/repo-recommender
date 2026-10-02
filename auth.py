@@ -95,11 +95,16 @@ def authorize_url(client_id, redirect_uri, state):
 def exchange_code(code, redirect_uri):
     """拿 code 换 access_token。"""
     client_id, client_secret = credentials()
-    r = requests.post(
-        TOKEN_URL, timeout=20,
-        headers={"Accept": "application/json"},
-        data={"client_id": client_id, "client_secret": client_secret,
-              "code": code, "redirect_uri": redirect_uri})
+    try:
+        r = requests.post(
+            TOKEN_URL, timeout=20,
+            headers={"Accept": "application/json"},
+            data={"client_id": client_id, "client_secret": client_secret,
+                  "code": code, "redirect_uri": redirect_uri})
+    except requests.RequestException as e:
+        # 连不上 GitHub(代理挂了、被墙了)—— 报清楚,别让它变成一句 500
+        raise RuntimeError(f"连不上 GitHub 换取 token:{type(e).__name__}。"
+                           "检查代理是否正常")
     if r.status_code != 200:
         raise RuntimeError(f"换 token 失败:HTTP {r.status_code} {r.text[:200]}")
     data = r.json()
@@ -113,9 +118,17 @@ def exchange_code(code, redirect_uri):
 
 def fetch_user(token):
     """用 token 拉这个人的资料。返回统一成我们要的字段。"""
-    r = requests.get(USER_API, timeout=20, headers={
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json"})
+    try:
+        r = requests.get(USER_API, timeout=20, headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"})
+    except requests.RequestException as e:
+        # 和 exchange_code 同一个道理:网络层的异常不是 RuntimeError,
+        # 不接住就会穿过 /auth/callback 的 `except RuntimeError` 变成 500。
+        # 这一步失败意味着"code 换到了 token,但拿不到用户资料" ——
+        # 报清楚,别让用户以为是自己操作错了。
+        raise RuntimeError(f"连不上 GitHub 拉取用户资料:{type(e).__name__}。"
+                           "检查代理是否正常")
     if r.status_code != 200:
         raise RuntimeError(f"拉用户资料失败:HTTP {r.status_code}")
     d = r.json()

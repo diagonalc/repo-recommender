@@ -106,19 +106,31 @@ def _migrate_events(conn):
     if not row or not row["sql"] or "neutral" in row["sql"]:
         return
 
-    conn.executescript("""
+    # 重建时如果老表已经有 user_id,必须把它一起搬过去。
+    #
+    # 不搬的后果很隐蔽:所有表态会**静默地变成无主数据** ——
+    # 之后 latest_opinions 查 "WHERE user_id = ?" 一条都匹配不到,
+    # 推荐会把你的口味当成空的,而且不报任何错。
+    # 正常情况下不会走到这儿(多用户迁移在后、每次启动都会先跑本函数),
+    # 但"半迁移状态"下这是唯一能保住数据的地方,成本也就一行判断。
+    has_user = "user_id" in _table_columns(conn, "events")
+    user_col = "user_id     INTEGER," if has_user else ""
+    col_list = "id, repo_id, user_id, action, created_at" if has_user else \
+               "id, repo_id, action, created_at"
+
+    conn.executescript(f"""
         ALTER TABLE events RENAME TO events_old;
         CREATE TABLE events (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             repo_id     INTEGER NOT NULL,
+            {user_col}
             action      TEXT NOT NULL
                         CHECK (action IN ('interested','not_interested','neutral')),
             created_at  TEXT NOT NULL
                         DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
             FOREIGN KEY (repo_id) REFERENCES repos(id)
         );
-        INSERT INTO events (id, repo_id, action, created_at)
-            SELECT id, repo_id, action, created_at FROM events_old;
+        INSERT INTO events ({col_list}) SELECT {col_list} FROM events_old;
         DROP TABLE events_old;
         CREATE INDEX IF NOT EXISTS idx_events_repo   ON events(repo_id);
         CREATE INDEX IF NOT EXISTS idx_events_action ON events(action);
@@ -162,10 +174,27 @@ def upsert_user(conn, gh):
         conn.commit()
         return row["id"], False
 
-    # 没有这个人 —— 看看有没有等着被认领的占位用户(单用户升级上来的那种)
+    # 没有这个人 —— 看看有没有等着被认领的占位用户(单用户升级上来的那种)。
+    #
+    # ⚠️ 只在这个占位用户是**全表唯一一个用户**时才认领。
+    #
+    # 为什么加这个限制:占位用户身上挂着原单用户库的全部私有数据
+    # (star 列表、关注列表、表态历史,以及由它们算出来的推荐)。
+    # 原来的自动认领是**无条件**的,等于"谁先完成 GitHub 登录,谁就继承这些"。
+    # 自己一个人用永远碰不到;但这站现在是对公网开放的,
+    # 第一个登录的陌生人就会拿到站长的整个口味画像。
+    #
+    # 加"它是唯一用户"这个条件,能把窗口收窄到最小:
+    # 那只可能出现在"老库刚升级完、还没有任何人登录过"的那一小段时间。
+    # 站上有了第二个用户之后,这个分支就再也不会触发了。
+    #
+    # (注:这仍然不是万无一失 —— 真正的修法是校验"登录的人就是站长",
+    #  但那需要把站长的 GitHub id 配进来。当前规模下不值得,先收窄。)
     ph = conn.execute(
         "SELECT id FROM users WHERE gh_id IS NULL ORDER BY id LIMIT 1").fetchone()
-    if ph:
+    if ph and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1:
+        print(f"[user] 认领占位用户 id={ph['id']}(单用户库升级上来的历史数据)"
+              f" → {gh.get('login')}")
         conn.execute("""UPDATE users SET gh_id=?, login=?, name=?, avatar_url=?, token=?
                         WHERE id=?""",
                      (gh.get("id"), gh.get("login"), gh.get("name"),
@@ -222,6 +251,30 @@ def count_users(conn):
     return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
 
 
+# ---------------- OAuth state(防 CSRF)----------------
+# 存服务端而不是 cookie —— 原因见 schema.sql 里的注释。
+
+def save_state(conn, state):
+    conn.execute("INSERT OR REPLACE INTO oauth_states (state) VALUES (?)", (state,))
+    # 顺手清掉过期的(超过 30 分钟没用上的),免得这张表无限长
+    conn.execute("DELETE FROM oauth_states "
+                 "WHERE created_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 minutes')")
+    conn.commit()
+
+
+def consume_state(conn, state):
+    """这个 state 是我们发出去的吗?是就删掉(一次性)并返回 True。"""
+    if not state:
+        return False
+    row = conn.execute("SELECT state FROM oauth_states WHERE state = ?",
+                       (state,)).fetchone()
+    if not row:
+        return False
+    conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+    conn.commit()
+    return True
+
+
 def _migrate_multiuser(conn):
     """把单用户的表升级成多用户:加 user_id,老数据归给"我"。
 
@@ -230,31 +283,59 @@ def _migrate_multiuser(conn):
 
     events / comments 只是加一列,用 ALTER TABLE 就行,不用重建。
     """
-    cols = _table_columns(conn, "starred")
-    if not cols or "user_id" in cols:
-        return                     # 已经是新结构(或者全新的库)
+    # ⚠️ 这里**故意不写总闸门**(比如开头来一句"starred 有 user_id 就整体 return")。
+    #
+    # 起初确实有这么一个,而它是个 bug。原因:
+    # starred / following / events / comments 是四次**各自独立落地**的操作
+    # (executescript 会先隐式提交),不是一个原子的大事务。
+    # 进程要是在"starred 升完了、following 还没升"之间被杀掉 ——
+    # 崩溃、OOM、被 kill,或者两个进程同时跑 init_db
+    # (注意 init_db 不只在启动时跑:/auth/login、/auth/callback、全站搜索都会调它,
+    #  而 run_daily.sh 的 flock 只锁得住采集脚本、锁不住 server)——
+    # 下次启动时 starred 已经有 user_id,总闸门就会直接放行过去,
+    # **following 永远升不了**。
+    #
+    # 那之后 list_following / add_event / recent_events 全报
+    # "no such column: user_id",一路 500,而且**再也不会自愈** ——
+    # 因为让它们坏掉的那个判断,同时也阻止了修复。
+    #
+    # 改成每张表自己判断"我要不要升"。这样中断的后果只是
+    # "这次少升一张,下次启动接着升",是可恢复的。
+    s_cols = _table_columns(conn, "starred")
+    f_cols = _table_columns(conn, "following")
+    e_cols = _table_columns(conn, "events")
+    c_cols = _table_columns(conn, "comments")
 
-    print("[migrate] 升级到多用户结构…")
+    need = [name for name, cols in
+            (("starred", s_cols), ("following", f_cols),
+             ("events", e_cols), ("comments", c_cols))
+            if cols and "user_id" not in cols]
+    if not need:
+        return                     # 全新的库,或者已经升过了
+    print(f"[migrate] 升级到多用户结构(需要升:{', '.join(need)})…")
+
+    # 只有真要搬数据时才创建占位用户。
+    # 放在前面无条件调的话,全新安装的库每次启动都会多出一个没人认领的 'me' 用户。
     me = ensure_local_user(conn)
 
-    conn.executescript(f"""
-        ALTER TABLE starred RENAME TO starred_old;
-        CREATE TABLE starred (
-            user_id     INTEGER NOT NULL,
-            repo_id     INTEGER NOT NULL,
-            starred_at  TEXT,
-            first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-            PRIMARY KEY (user_id, repo_id),
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (repo_id) REFERENCES repos(id)
-        );
-        INSERT INTO starred (user_id, repo_id, starred_at, first_seen)
-            SELECT {me}, repo_id, starred_at, first_seen FROM starred_old;
-        DROP TABLE starred_old;
-    """)
+    if "starred" in need:
+        conn.executescript(f"""
+            ALTER TABLE starred RENAME TO starred_old;
+            CREATE TABLE starred (
+                user_id     INTEGER NOT NULL,
+                repo_id     INTEGER NOT NULL,
+                starred_at  TEXT,
+                first_seen  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                PRIMARY KEY (user_id, repo_id),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (repo_id) REFERENCES repos(id)
+            );
+            INSERT INTO starred (user_id, repo_id, starred_at, first_seen)
+                SELECT {me}, repo_id, starred_at, first_seen FROM starred_old;
+            DROP TABLE starred_old;
+        """)
 
-    cols = _table_columns(conn, "following")
-    if cols and "user_id" not in cols:
+    if "following" in need:
         conn.executescript(f"""
             ALTER TABLE following RENAME TO following_old;
             CREATE TABLE following (
@@ -274,8 +355,7 @@ def _migrate_multiuser(conn):
         """)
 
     for tbl in ("events", "comments"):
-        c = _table_columns(conn, tbl)
-        if c and "user_id" not in c:
+        if tbl in need:
             # ADD COLUMN 加不了 NOT NULL(已有行没值),所以先加可空列再回填
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER")
             conn.execute(f"UPDATE {tbl} SET user_id = ? WHERE user_id IS NULL", (me,))
@@ -284,17 +364,16 @@ def _migrate_multiuser(conn):
     print(f"[migrate] 完成,老数据都归给了 user_id={me}")
 
 
-def _migrate_comments_add_author(conn):
-    """给老的 comments 表补上 author 列。
-
-    SQLite 支持直接 ADD COLUMN(和改 CHECK 约束不一样,不用重建表)。
-    只在缺这列的时候才动。"""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
-    if not cols or "author" in cols:
-        return
-    conn.execute("ALTER TABLE comments ADD COLUMN author TEXT")
-    conn.commit()
-    print("[migrate] comments 表已加上 author 列")
+# (这里原来有个 _migrate_comments_add_author,给 comments 补一个 author 列。
+#  它已经删掉了:那一列是在"单用户"时代加的,本意是"以后多人评论时放名字"。
+#  后来真做多用户时用的是 user_id(评论作者从 users 表关联出来),
+#  author 就再也没被任何代码读过 —— 线上 0 行有值。
+#
+#  更要紧的是它让 schema.sql 说了假话:schema.sql 描述"全新的库该长什么样",
+#  但每次建新库都会被这个迁移多加一列,于是文件描述的结构和真实结构对不上。
+#  留着它只会让下一个读 schema.sql 的人继续困惑。
+#
+#  已有的库里那一列会留着 —— 一个没人读的空列,无害,不值得为它重建表。)
 
 
 def init_db(conn):
@@ -303,7 +382,6 @@ def init_db(conn):
         conn.executescript(f.read())
     conn.commit()
     _migrate_events(conn)
-    _migrate_comments_add_author(conn)
     _migrate_multiuser(conn)     # 放最后:它给 events/comments 加 user_id,别被前面的重建覆盖掉
 
 
@@ -409,13 +487,21 @@ def count_events(conn):
     return conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
 
 
-def recent_events(conn, limit=10):
+def recent_events(conn, user_id, limit=10):
+    """某个人的反馈流水,最近的在前。
+
+    ⚠️ user_id 是必须的,别把它省掉。
+    这个函数原来没有这个参数,调用它的 /api/events 端点也没有 require_user ——
+    多用户上线之后,那就是"任何人不用登录都能读到所有人的点赞记录"。
+    自己一个人用的时候完全看不出来,人一多就是隐私问题。
+    """
     return conn.execute("""
         SELECT e.id, e.action, e.created_at, r.full_name
         FROM events AS e
         LEFT JOIN repos AS r ON r.id = e.repo_id
+        WHERE e.user_id = ?
         ORDER BY e.id DESC
-        LIMIT ?""", (limit,)).fetchall()
+        LIMIT ?""", (user_id, limit)).fetchall()
 
 
 # "当前态度" = 这个人对每个 repo 的最后一条事件。
@@ -735,9 +821,17 @@ def repo_history(conn, repo_id):
 
 
 def starred_list(conn, user_id, limit=200):
+    """某个用户 star 过的仓库,按 star 时间倒序。
+
+    ⚠️ topics 必须带上。少了它,接口出口的 attach_tags 拿到的就是 None,
+    只并得进 auto_tags,而**作者自己设的 topics 全丢** ——
+    表现是"已收藏"页的卡片标签是空的/只剩自动标签,
+    但同一个仓库在 Trending 页却标签齐全。
+    又是"同一个字段两处口径不一致"(这类问题在这个项目里出现过好几次了)。
+    """
     return conn.execute("""
         SELECT r.id, r.full_name, r.description, r.language, r.html_url,
-               r.stargazers_count, s.starred_at
+               r.stargazers_count, r.topics, s.starred_at
         FROM starred AS s JOIN repos AS r ON r.id = s.repo_id
         WHERE s.user_id = ?
         ORDER BY s.starred_at DESC LIMIT ?""", (user_id, limit)).fetchall()

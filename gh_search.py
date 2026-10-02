@@ -35,10 +35,19 @@ def search_github(q, limit=30):
     # 要找的是"名字含这个字符串的 repo",那就把范围明确收在名字上。
     query = q if "in:" in q.lower() else f"{q} in:name"
 
-    r = requests.get(API, headers=headers,
-                     params={"q": query, "sort": "stars", "order": "desc",
-                             "per_page": max(1, min(limit, 100))},
-                     timeout=30)
+    try:
+        r = requests.get(API, headers=headers,
+                         params={"q": query, "sort": "stars", "order": "desc",
+                                 "per_page": max(1, min(limit, 100))},
+                         timeout=30)
+    except requests.RequestException as e:
+        # 网络层错误(代理抖动 / TLS 中断)必须转成 RuntimeError。
+        #
+        # 调用方 api.py 写的是 `except RuntimeError` → 转 502"连不上 GitHub"。
+        # requests 的异常**不是** RuntimeError,不转的话它会直接冒出去
+        # 变成 500 Internal Server Error —— 用户以为是我们崩了,
+        # 其实是外面连不上,两边都查错方向。
+        raise RuntimeError(f"连不上 GitHub:{type(e).__name__}")
 
     if r.status_code in (403, 429):
         try:

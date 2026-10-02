@@ -31,7 +31,7 @@ from features import load_features
 POPULARITY_WEIGHT = 0.1
 
 
-def recommend_for(conn, user_id, n=20, offset=0):
+def recommend_for(conn, user_id, n=20, offset=0, sort="similarity"):
     """算推荐列表。命令行和 HTTP 接口共用这一份逻辑(别写两遍)。
 
     offset 用来"换一批":推荐是按分数排好的长列表,取第 offset 个开始的 n 个。
@@ -116,8 +116,19 @@ def recommend_for(conn, user_id, n=20, offset=0):
             "_desc": desc,
         })
 
-    out.sort(key=lambda d: -d["score"])
-    top = out[offset:offset + n]        # 换一批:取下一段
+    # 排序放在服务端做,而不是前端。
+    # 原因:前端现在是"滚到底自动加载下一批",每批是**追加**的 ——
+    # 如果每批在浏览器里各自排序再拼起来,整体顺序就乱了
+    # (第 2 批里 star 很高的仓库会排在第一批后面)。
+    # 服务端对**完整列表**排好再切片,翻多少页顺序都是对的。
+    if sort == "stars":
+        out.sort(key=lambda d: -d["stargazers_count"])
+    elif sort == "name":
+        out.sort(key=lambda d: d["full_name"])
+    else:                                   # "similarity" 就是推荐分本身
+        out.sort(key=lambda d: -d["score"])
+
+    top = out[offset:offset + n]
 
     # 补上"介绍":从 README 抽的那段(抽不到就用 description)。
     # 只对最终要展示的这几条查 README,不把整张表拉进来。

@@ -29,6 +29,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- OAuth 的防 CSRF 随机串(state)。
+--
+-- 第一版存在 cookie 里,结果实际用起来经常"state 不匹配":
+-- 手机浏览器的 cookie 策略、或者你从 127.0.0.1 发起登录而回调跳到公开域名
+-- (cookie 是按域名存的,两个域名互不相认)—— 都会让那个 cookie 送不回来。
+--
+-- 改成**存在服务端**:发出去的 state 记一行,回调时查得到就认。
+-- 代价:少了一层"必须是同一个浏览器"的绑定(理论上存在"登录 CSRF"),
+-- 但对这个应用来说,最坏情况是"你被登成了别人的账号",影响很小。
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       TEXT    PRIMARY KEY,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS repos (
     id                INTEGER PRIMARY KEY,     -- 直接用 GitHub 的 repo id 当主键(它天然唯一)
     full_name         TEXT    NOT NULL UNIQUE, -- "owner/repo"。UNIQUE = 同一个 repo 永远只有一行
@@ -130,8 +144,10 @@ CREATE TABLE IF NOT EXISTS auto_tags (
 --   comments 是自由文本的评论
 -- 两个都是只追加的流水,不覆盖。
 --
--- author 是为**以后多人用**留的:现在只有你自己,所以是空的;
--- 等哪天别人也能评论,这一列就有地方写名字了。现在加,比以后改表省事。
+-- 曾经这里还有一列 author(为"以后多人评论"预留的名字字符串)。
+-- 真做多用户时用的是 user_id —— 作者名从 users 表关联出来,不用再存一份字符串,
+-- 改名了也不会留下不一致的旧名字。author 从此没人读,已删除。
+-- (老的库里那一列还在,是个没人读的空列,无害。)
 CREATE TABLE IF NOT EXISTS comments (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,        -- 谁评论的。作者现在从这张表关联出来,不用再存字符串

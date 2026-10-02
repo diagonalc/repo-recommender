@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  Windows 任务计划程序的任务定义(RepoRecommenderDaily)。
+
+  这是**唯一真源**:想改任务的运行时间/电源策略,改这个文件然后重新导入,
+  不要在"任务计划程序"GUI 里点 —— GUI 里改完这里就对不上了,下次一导入就被覆盖。
+
+  导入命令(在 Windows 上,不用管理员):
+      schtasks /create /tn RepoRecommenderDaily /xml RepoRecommenderDaily.xml /f
+
+  ⚠️ 文件必须是 UTF-16LE 编码带 BOM,schtasks 才认。Git 里存的是这个编码,
+     别让编辑器"顺手"转成 UTF-8 —— 那会让导入报"XML 格式不正确"。
+
+  每一项为什么这么设,见文件末尾的注释块。
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>每日抓取 GitHub 仓库数据并记录 star 快照。trending 榜的增速靠相邻两天的快照算,漏一天就永久缺一天。</Description>
+    <URI>\RepoRecommenderDaily</URI>
+  </RegistrationInfo>
+
+  <Triggers>
+    <!-- 上午班:原来的时间 -->
+    <CalendarTrigger>
+      <StartBoundary>2026-09-28T10:17:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+    <!-- 傍晚班:新增的备份。笔记本上午经常在休眠,多一班多一次机会。
+         跑两次不会产生重复数据 —— 快照表主键是 (repo_id, snapshot_date),
+         同一天写第二遍是覆盖。 -->
+    <CalendarTrigger>
+      <StartBoundary>2026-09-28T18:17:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+
+  <Principals>
+    <!-- InteractiveToken = 只在用户已登录时跑。
+         锁屏算已登录,仍然会跑;注销了才不跑。
+         改成"不管用户是否登录"必须存 Windows 密码,对 WSL 任务风险更大,先不动。 -->
+    <Principal id="Author">
+      <UserId>S-1-5-21-237601340-1332120348-3907147262-1001</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+
+    <!-- ★ 修 09-29 / 10-01 丢失的关键项之一。
+         原来两项都是 true:笔记本一拔电源就整天不跑。 -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+
+    <AllowHardTerminate>true</AllowHardTerminate>
+
+    <!-- ★ 修 09-29 / 10-01 丢失的关键项之二。
+         原来没有这一项:10:17 那一刻机器在休眠/关机,这一天就**永远不会补**。
+         开了它,Windows 发现"该跑没跑"就会在机器恢复后补上。 -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+
+    <!-- ★ 修 10-02 那次崩溃:失败后自动重试,10 分钟一次,最多 3 次。
+         原来没有这一项,崩了就崩了,一直没人管。 -->
+    <RestartOnFailure>
+      <Interval>PT10M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+
+    <!-- 原来是 72 小时,长得足以和"第二天的触发"重叠 ——
+         两个进程同时写同一个 SQLite 会撞 database is locked。
+         (run_daily.sh 里也有 flock 兜底,两道保险。) -->
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+
+    <Priority>7</Priority>
+  </Settings>
+
+  <Actions Context="Author">
+    <!-- .bat 里就一行:wsl.exe 拉起 Ubuntu,再让 bash 跑 run_daily.sh。
+         为什么不直接在这儿写 wsl.exe:穿过 任务 → cmd → wsl.exe → bash 好几层,
+         引号极易出错。逻辑放脚本里,这边只留一行。
+
+         (注意:XML 注释里不能出现连续两个减号,所以上面没写 wsl 的命令行参数。) -->
+    <Exec>
+      <Command>C:\Users\Lenovo\repo-recommender-daily.bat</Command>
+    </Exec>
+  </Actions>
+</Task>

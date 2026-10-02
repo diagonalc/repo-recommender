@@ -82,15 +82,35 @@ def fetch_page(lang, page):
     """拉某一语言某一页。
 
     成功 → 返回 repo 列表(空列表表示这语言没有更多了)。
-    重试多次仍被限流 → 抛 RuntimeError,让上层停下来。
+    限流或网络故障、重试多次仍不行 → 抛 **RuntimeError**(不是别的异常类型),
+    让 collect_repos 能接住并只跳过这个语言,而不是把整个 job 炸掉。
     """
     headers = {"Accept": "application/vnd.github+json"}
     if TOKEN:
         headers["Authorization"] = f"token {TOKEN}"
 
     for attempt in range(1, MAX_RETRIES + 1):
-        resp = requests.get(BASE_URL, headers=headers,
-                            params=build_params(lang, page), timeout=30)
+        try:
+            resp = requests.get(BASE_URL, headers=headers,
+                                params=build_params(lang, page), timeout=30)
+        except requests.RequestException as e:
+            # 代理抖动、SSL 中断这类"网络层"错误。
+            #
+            # ⚠️ 这里原来没有 except —— 而 requests 的异常**不是** RuntimeError,
+            # 于是它会穿过 collect_repos 的 `except RuntimeError` 直接冒到 main(),
+            # 把整个 job 干掉。2026-10-02 就是这么丢掉一整天快照的:
+            # 那天 12 个语言已经成功拿到 8 个,最后却一个都没入库。
+            #
+            # 接住它、退避重试;仍不行就转成 RuntimeError 抛出去 ——
+            # 上层只跳过这一个语言,其余照常入库(能拿到多少算多少)。
+            if attempt < MAX_RETRIES:
+                wait = min(5 * attempt, MAX_WAIT)
+                print(f"    网络错误:{type(e).__name__};等 {wait}s 再试(第{attempt}次)")
+                time.sleep(wait)
+                continue
+            raise RuntimeError(
+                f"网络错误,重试 {MAX_RETRIES} 次仍失败:{type(e).__name__}: {e}")
+
         remaining = resp.headers.get("X-RateLimit-Remaining")
         print(f"  {lang} p{page} → HTTP {resp.status_code}(剩余额度 {remaining})")
 

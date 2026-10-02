@@ -133,6 +133,8 @@
   .pageback .ico svg { width: 22px; height: 22px; display: block; }
   main { max-width: 660px; margin: 0 auto; padding: 4px 16px 80px; }
   .status { color: var(--muted); font-size: 13px; padding: 14px 0; }
+  /* 列表末尾那行(滚到底自动加载时显示"加载中"或"到底了") */
+  .more-sentinel { text-align: center; padding: 22px 0; font-size: 12.5px; }
   /* 空了就不占位。搜索页顶部本来会多出一条空行 ——
      工具栏是空的但带着 padding,状态行写着"加载中"还没被清掉。 */
   .toolbar:empty, .status:empty { display: none; }
@@ -259,7 +261,12 @@
   .sel.more .sel-item .ico svg { width: 16px; height: 16px; display: block; }
 
   /* ---------- 未登录:整页只有登录界面 ---------- */
-  body.logged-out .page { margin-left: 0; }   /* 没登录时不显示导航,内容也不用给它让位 */
+  /* 没登录时不显示导航,内容也不用给它让位。
+     ⚠️ 下面这条 .rail 是必须的:app.js 只是把 railEl.replaceChildren() 清空,
+     元素本身还在 —— 它带着 flex / 背景色 / 右边框,于是登录页左侧会留下
+     一条 56px 的空栏。(手机端本来就 .rail { display: none },所以只有桌面端看得见。) */
+  body.logged-out .rail { display: none; }
+  body.logged-out .page { margin-left: 0; }
   .login-screen {
     max-width: 380px; margin: 14vh auto 0; text-align: center;
     display: flex; flex-direction: column; align-items: center; gap: 18px;
@@ -347,6 +354,27 @@
   .chart-label { font-size: 11px; color: var(--muted); }
   .similar-row { padding: 5px 0; font-size: 13.5px; }
 
+  /* ---------- 窄屏(手机):不要导航栏,改成标题旁边一个下拉 ----------
+     试过两种方案都不行:
+       ① 左侧竖栏       → 390px 的屏幕被占掉 176px(45%)
+       ② 底部 5 图标条  → 还是挤
+     最后选:标题右边放一个"下箭头",点开是个菜单。
+     **完全不占常驻空间**,而且手机上不需要 hover 那套东西。 */
+  #navmenu { display: none; }          /* 大屏幕用左侧竖栏,不用这个 */
+
+  /* ⚠️ 选择器必须写得够具体(四个类),不能用 .navmenu .sel-menu(两个类)。
+     上面那条 .sel.more .sel-menu 是**三个类**,权重更高 ——
+     类型相同比权重,权重相同才比先后。权重比不过的话这条就会被它盖掉,
+     菜单会按"贴右边"定位,从这个按钮往左展开,在手机上直接跑出屏幕外。 */
+  .navmenu .sel.more .sel-menu { left: 0; right: auto; min-width: 168px; }
+
+  @media (max-width: 700px) {
+    .rail { display: none; }           /* 手机上彻底不要竖栏 */
+    #navmenu { display: block; }       /* 换成标题旁边的下拉 */
+    .page { margin-left: 0; }
+    .login-screen { margin-top: 6vh; }
+  }
+
   /* ---------- 详情页的笔记 ---------- */
   .comment-input {
     width: 100%; box-sizing: border-box; resize: vertical;
@@ -371,7 +399,11 @@
   <div class="pagehead">
     <div class="headrow">
       <button id="pageback" class="icon-btn pageback" style="display:none"></button>
-      <h1 id="pagetitle">Trending</h1>
+      <!-- 标题留空:由 JS 在启动时**同步**填上。
+           以前这里写死 "Trending",而 JS 要等异步的登录检查跑完才改,
+           于是会先闪一下 "Trending" 再跳成真正的那页 —— 看起来像刷新了两次。 -->
+      <h1 id="pagetitle"></h1>
+      <div id="navmenu" class="navmenu"></div>
       <div id="usermenu" class="usermenu"></div>
     </div>
   </div>
@@ -386,6 +418,10 @@
 
 <aside class="rail" id="rail"></aside>
 
-<script src="app.js"></script>
+<!-- ?v=2 是用来"顶掉"浏览器里那份旧缓存的:
+     改成不同的 URL,浏览器就当它是新文件,必定重新下载。
+     服务端已经加了 no-cache,以后改代码不用再动这个数字 —— 这次是为了
+     让"已经缓存了旧版本"的浏览器(尤其手机)能拿到新版本,一次性手段。 -->
+<script src="app.js?v=2"></script>
 </body>
 </html>

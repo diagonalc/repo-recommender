@@ -30,19 +30,17 @@ const I18N = {
     lang_zh: "中文", lang_en: "English",
     sort_trending: "最近增量", sort_stars: "总星数", sort_pushed: "最近更新", sort_name: "名称",
     sort_similarity: "相似度",
-    refresh: "刷新", refresh_batch: "换一批",
+    refresh: "刷新",
     loading: "加载中…", no_data: "没有数据。", error: "出错了:",
     open_github: "在 GitHub 打开", releases: "Releases", back: "返回上一页",
-    prev_batch: "上一批",
     interested: "感兴趣", not_interested: "不感兴趣", fail: "失败:",
-    more: "更多", copy_link: "复制链接", copied: "已复制链接",
+    more: "更多", menu: "导航", copy_link: "复制链接", copied: "已复制链接",
     un_not_interested: "取消不感兴趣",
     comments_go: "查看评论", star_go: "在 GitHub 上 star", starred_ok: "已 star ✓",
     me: "我",
     login: "用 GitHub 登录",
     logout: "退出登录",
     login_blurb: "记录你的 star、关注和口味,每天给你推对口味的 repo。",
-    need_login: "这个页面要登录才能用。",
     login_not_ready: "还没配置 OAuth 凭据:把 Client ID / Secret 填进 ~/.config/repo-recommender/oauth.env",
     snapshots: "star 快照 ({0})", readme: "README",
     readme_none: "还没抓到这个 repo 的 README。",
@@ -55,8 +53,8 @@ const I18N = {
     summary_trending: "近两个快照日({0} → {1})增量 Top {2}",
     summary_sorted: "按{0} · {1} 个",
     summary_tags: "{1} 个(标签 {0} · 按{2})",
-    summary_batch: "第 {0} 批 · {1} 个",
-    summary_batch_end: "第 {0} 批(最后一批)· {1} 个",
+    summary_recommend: "已加载 {0} 个 · 继续下滑看更多",
+    list_end: "— 到底了 —",
     summary_starred: "{0} 个(按 star 时间倒序)",
     summary_search: "「{0}」· {1} 个",
     search_empty: "没搜到匹配的 repo。",
@@ -88,19 +86,17 @@ const I18N = {
     lang_zh: "中文", lang_en: "English",
     sort_trending: "Recent growth", sort_stars: "Total stars",
     sort_pushed: "Recently updated", sort_name: "Name", sort_similarity: "Similarity",
-    refresh: "Refresh", refresh_batch: "New batch",
+    refresh: "Refresh",
     loading: "Loading…", no_data: "No data.", error: "Error:",
     open_github: "Open on GitHub", releases: "Releases", back: "Go back",
-    prev_batch: "Previous batch",
     interested: "Interested", not_interested: "Not interested", fail: "Failed: ",
-    more: "More", copy_link: "Copy link", copied: "Link copied",
+    more: "More", menu: "Menu", copy_link: "Copy link", copied: "Link copied",
     un_not_interested: "Undo not interested",
     comments_go: "View comments", star_go: "Star on GitHub", starred_ok: "Starred ✓",
     me: "me",
     login: "Sign in with GitHub",
     logout: "Sign out",
     login_blurb: "Tracks your stars and interests, and recommends repos you'll actually like.",
-    need_login: "This page needs you to sign in.",
     login_not_ready: "OAuth credentials not configured: fill Client ID / Secret into oauth.env",
     snapshots: "Star snapshots ({0})", readme: "README",
     readme_none: "No README captured yet.",
@@ -113,8 +109,8 @@ const I18N = {
     summary_trending: "Top {2} by growth ({0} → {1})",
     summary_sorted: "{0} · {1} repos",
     summary_tags: "{1} repos (tags {0} · {2})",
-    summary_batch: "Batch {0} · {1} repos",
-    summary_batch_end: "Batch {0} (last) · {1} repos",
+    summary_recommend: "{0} loaded · scroll for more",
+    list_end: "— that's all —",
     summary_starred: "{0} repos (newest first)",
     summary_search: "“{0}” · {1} repos",
     search_empty: "No repos matched.",
@@ -155,7 +151,11 @@ function applyTheme(theme) {
 // 判断方式:窗口宽度离屏幕可用宽度只剩一点点,就说明是铺满状态。
 function syncRailOpen() {
   const avail = screen.availWidth || window.innerWidth;
-  document.body.classList.toggle("rail-open", window.innerWidth >= avail - 8);
+  // ⚠️ 必须加宽度门槛:手机上 window.innerWidth 几乎等于屏幕宽度,
+  // 只看"离屏幕宽只差一点点"的话,手机永远判定成"全屏",导航会一直撑着不收回。
+  // 大屏幕(≥1000px)才认为是"窗口铺满",这时才自动展开。
+  const wide = window.innerWidth >= 1000;
+  document.body.classList.toggle("rail-open", wide && window.innerWidth >= avail - 8);
 }
 
 // 线条图标,风格对齐 Threads / X(细描边、圆角端点)。自己画的,不是扒来的素材。
@@ -236,10 +236,10 @@ const ICONS = {
     'stroke-linecap="round" stroke-linejoin="round">' +
     '<circle cx="12" cy="8" r="3.6"/>' +
     '<path d="M4.5 20.2c0-3.6 3.4-5.6 7.5-5.6s7.5 2 7.5 5.6"/></svg>',
-  arrowRight:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  chevronDown:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
     'stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M4.5 12h14"/><polyline points="12.5 6 18.5 12 12.5 18"/></svg>',
+    '<polyline points="6 9.5 12 15.5 18 9.5"/></svg>',
   arrowLeft:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round">' +
@@ -299,7 +299,7 @@ const state = {
   hasMore: true,
   q: "",
   scope: "local",
-  returnTab: "trending",
+  returnHash: "#/trending",   // 点进标签之前在哪,清空标签后回哪儿去。存**完整 hash**,见 toggleTag()
   followQ: "",              // 已关注页的搜索词(只搜已关注的人)
   followSort: "name",       // name | recent | oldest
 };
@@ -421,6 +421,16 @@ function fixSortFor(tab) {
   }
 }
 
+// 解 URL 里的百分号编码,解不出来就当原样 —— 绝不抛。
+//
+// decodeURIComponent("%") 会抛 URIError。而它是在 **hashchange 回调**里被调用的,
+// 没人接这个异常 —— route() 当场中断,页面停在旧内容,只在控制台留一行错,
+// 用户看到的是"我输了个地址,啥也没发生"。
+// 手敲一个 #/tag/% 就能触发。
+function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch (_) { return s; }
+}
+
 function route() {
   const { parts, qs } = currentRoute();
   const head = parts[0] || "recommend";
@@ -430,14 +440,14 @@ function route() {
     state.tab = "detail";
     scrollTo = qs.get("to") || null;
     setActiveTab(null);
-    showDetail(decodeURIComponent(parts[1]) + "/" + decodeURIComponent(parts[2]));
+    showDetail(safeDecode(parts[1]) + "/" + safeDecode(parts[2]));
     return;
   }
   scrollTo = null;
 
   // #/tag/a,b
   if (head === "tag" && parts[1]) {
-    state.tags = parts[1].split(",").map(decodeURIComponent).filter(Boolean);
+    state.tags = parts[1].split(",").map(safeDecode).filter(Boolean);
     state.tab = "tag";
     fixSortFor(state.tab);          // ← 补上:这条分支以前漏了,从推荐页点标签就报错
     setActiveTab(null);
@@ -455,11 +465,8 @@ function route() {
     state.scope = qs.get("scope") || "local";
   }
 
-  // 推荐页的"第几批"也放进 URL。这样**浏览器后退键天然就能回上一批** ——
-  // 不用专门再造一套"上一批"的状态和历史,后退键本来就是干这个的。
-  state.offset = state.tab === "recommend"
-    ? Math.max(0, parseInt(qs.get("offset") || "0", 10) || 0)
-    : 0;
+  // 推荐页改成"滚到底自动加载"了,没有"第几批"这个概念 —— 每次进来都从头看
+  state.offset = 0;
   setActiveTab(state.tab);
   loadList();
 }
@@ -505,6 +512,7 @@ function buildRail() {
     lang = lang === "zh" ? "en" : "zh";
     localStorage.setItem("ui_lang", lang);
     buildRail();
+    renderNavMenu();
     route();
   }));
 
@@ -538,12 +546,21 @@ function showPageBack(show) {
 
 function toggleTag(tag) {
   if (!state.tags.length) {
-    state.returnTab = state.tab === "tag" ? "trending" : state.tab;
+    // 记住"从哪儿点进标签的",清空标签后好回去。
+    //
+    // ⚠️ 存的是**完整 hash**,不是 state.tab。
+    // state.tab 的取值不止"列表页那几种":详情页是 "detail"、搜索页是 "search"。
+    // 存 tab 名再拼成 "#/" + tab 会得到两个坏地址:
+    //   #/detail —— 不在 TABS 里,路由会当成未知页面把人甩回推荐页
+    //   #/search —— 能打开,但 q 参数没了,搜索词和结果全丢
+    // hash 天生就是"可以直接 navigate 的",没有这个拼接问题。
+    const cur = location.hash || "#/trending";
+    state.returnHash = cur.startsWith("#/tag/") ? "#/trending" : cur;
   }
   const next = state.tags.includes(tag)
     ? state.tags.filter(x => x !== tag)
     : state.tags.concat(tag);
-  navigate(next.length ? tagHash(next) : "#/" + (state.returnTab || "trending"));
+  navigate(next.length ? tagHash(next) : (state.returnHash || "#/trending"));
 }
 
 // ---- 条目底部的操作行 ----
@@ -616,7 +633,18 @@ function postActions(r, node, opts = {}) {
   if (opts.moreHost) opts.moreHost.appendChild(more);
   else if (opts.topRight) node.appendChild(more);
   else wrap.appendChild(more);
-  if (opts.reasonText) wrap.appendChild(note);
+
+  // note 永远挂进 DOM,哪怕现在没内容。
+  //
+  // 以前这里是 `if (opts.reasonText) wrap.appendChild(note)` ——
+  // 但 Trending / 搜索 / 已收藏 / 详情页的条目**本来就没有"推荐理由"**,
+  // 于是 note 成了一个游离节点(创建了、但从没进过文档)。
+  // 点星失败(token 权限不足那段完整的报错文案)、投票失败、复制链接的提示
+  // 全都写进了这个看不见的元素里 —— 用户侧的表现是"我明明点了,界面毫无反应",
+  // 而且控制台一声不吭。这类问题最难查,因为根本没有错误可看。
+  //
+  // 空着的 .reason 只是个 12px 的灰色 span(左边距 6px),挂着不占地方。
+  wrap.appendChild(note);
   paint();
   return wrap;
 }
@@ -808,30 +836,7 @@ function repoPost(r, opts = {}) {
 function renderToolbar() {
   toolbarEl.replaceChildren();
 
-  if (state.tab === "recommend") {
-    // 不在第一批时,给一个回上一批的入口(浏览器后退键也行)
-    if (state.offset > 0) {
-      const prev = h("button", "btn");
-      prev.appendChild(iconSpan("arrowLeft", 15));
-      prev.appendChild(h("span", null, t("prev_batch")));
-      prev.onclick = () => {
-        const o = Math.max(0, state.offset - PAGE);
-        navigate(o ? "#/recommend?offset=" + o : "#/recommend");
-      };
-      toolbarEl.appendChild(prev);
-    }
-
-    const b = h("button", "btn");
-    b.appendChild(iconSpan("refresh", 15));
-    b.appendChild(h("span", null, t("refresh_batch")));
-    // 走 navigate 而不是直接改 state —— 每换一批就是一条历史记录,
-    // 后退键才能一步步退回去
-    b.onclick = () => {
-      const next = state.hasMore ? state.offset + PAGE : 0;
-      navigate(next ? "#/recommend?offset=" + next : "#/recommend");
-    };
-    toolbarEl.appendChild(b);
-  }
+  // 推荐页不再有"换一批 / 上一批"按钮 —— 改成滚到底自动加载(见 loadMoreRecommend)
 
   if (state.tab === "trending" || state.tab === "tag" || state.tab === "recommend") {
     toolbarEl.appendChild(makeSelect(
@@ -1238,7 +1243,19 @@ function renderDetail(d) {
   }
 }
 
+// 详情请求的"代次"计数器:每打开一个仓库就 +1。
+// 响应回来时如果已经不是自己那一代,说明用户早切走了 —— 直接丢掉,别画。
+//
+// 不加这个会渲染错内容:先点 A 再快速点 B(或连按后退键切来切去),
+// 只要 A 的响应晚于 B 返回,A 就会覆盖 B 的页面 ——
+// 地址栏和标题写着 B,正文和点赞状态却是 A。
+//
+// 这个窗口**不小**:后端碰到"还没抓过 README"的仓库会**现场去 GitHub 拉一次**
+// (见 api.py 的按需抓取),那一下可能要好几秒。
+let detailSeq = 0;
+
 async function showDetail(fullName) {
+  const seq = ++detailSeq;
   detailEl.style.display = "block";
   detailEl.replaceChildren();
   listEl.replaceChildren();
@@ -1248,9 +1265,12 @@ async function showDetail(fullName) {
 
   try {
     const op = await getJSON("/api/opinions");
+    const repo = await getJSON("/api/repos/" + fullName);
+    if (seq !== detailSeq) return;      // 用户已经切到别的仓库了,这次的结果作废
     opinions = op.opinions || {};
-    renderDetail(await getJSON("/api/repos/" + fullName));
+    renderDetail(repo);
   } catch (e) {
+    if (seq !== detailSeq) return;      // 过期的错误也不该盖住新页面
     detailEl.replaceChildren();
     if (!needLogin(e)) statusEl.textContent = t("detail_error") + e.message;
   }
@@ -1265,6 +1285,70 @@ function render(items, opts) {
   items.forEach(r => listEl.appendChild(repoPost(r, opts)));
   statusEl.textContent = opts.summary || "";
 }
+
+// ---- 推荐页:滚到底自动加载下一批 ----
+// 像 Google 那样滑到底就自动出下一页,**追加**在后面而不是替换。
+// 好处:不用手动点按钮,而且翻过的内容不会"翻过去就没了"。
+let loadingMore = false;
+let moreSentinel = null;
+
+function appendMoreSentinel() {
+  moreSentinel = h("div", "more-sentinel muted",
+                   state.hasMore ? "" : t("list_end"));
+  listEl.appendChild(moreSentinel);
+}
+
+async function loadMoreRecommend() {
+  if (loadingMore || !state.hasMore || state.tab !== "recommend" || !moreSentinel) return;
+  loadingMore = true;
+
+  // 把"这一次请求"绑定的东西先抓在手里,后面判断是否已经过期要用。
+  const sentinel = moreSentinel;
+  const offset = state.offset;
+  sentinel.textContent = t("loading");
+
+  try {
+    const d = await getJSON(
+      `/api/recommend?limit=${PAGE}&offset=${offset}` +
+      `&sort=${encodeURIComponent(state.sort)}`);
+
+    // ⚠️ await 之后,世界可能已经变了 —— 用户在等的这几百毫秒里
+    // 切了 tab、改了排序、按了浏览器后退。上一个页面发出去的请求,
+    // 结果绝不能往当前页面上写。
+    //
+    // 不拦会有两个后果,都很隐蔽:
+    //   · 换了页面 → 哨兵已经被 replaceChildren 摘掉,
+    //     insertBefore 抛 NotFoundError,被下面 catch 到还会把新页面的状态行
+    //     覆盖成一句"出错了"
+    //   · 又切回推荐页 → 新哨兵已经建好,旧请求的数据被插进新列表
+    //     (用的是旧的排序、旧的 offset),而且 state.offset 被旧值覆盖,
+    //     后面翻页会重复或漏掉内容
+    //
+    // 三道判断:还在推荐页吗?哨兵还是我这一根吗?它还挂在文档里吗?
+    if (state.tab !== "recommend" || moreSentinel !== sentinel ||
+        !sentinel.isConnected) return;
+
+    state.offset = d.offset + d.count;
+    state.hasMore = d.has_more;
+    // 插到"哨兵"前面 —— 这样哨兵始终在列表最末尾
+    d.items.forEach(r =>
+      listEl.insertBefore(repoPost(r, { feedback: true }), sentinel));
+    sentinel.textContent = d.has_more ? "" : t("list_end");
+    statusEl.textContent = t("summary_recommend", state.offset);
+  } catch (e) {
+    if (!needLogin(e)) statusEl.textContent = t("error") + e.message;
+  } finally {
+    loadingMore = false;
+  }
+}
+
+// 离底部还有 700px 就提前开始加载 —— 等真到底了再加载,用户会看到一段空白
+window.addEventListener("scroll", () => {
+  if (state.tab !== "recommend" || !state.hasMore || loadingMore) return;
+  const nearBottom = window.innerHeight + window.scrollY >=
+                     document.documentElement.scrollHeight - 700;
+  if (nearBottom) loadMoreRecommend();
+});
 
 async function getJSON(path) {
   const res = await fetch(API + path, FETCH_OPTS);
@@ -1323,18 +1407,55 @@ async function renderUserMenu() {
   wrap.appendChild(btn);
 
   const menu = h("div", "sel-menu");
-  const out = h("div", "sel-item");
-  out.appendChild(iconSpan("logout", 16));
-  out.appendChild(h("span", null, t("logout")));
-  out.onclick = async (e) => {
-    e.stopPropagation();
-    wrap.classList.remove("open");
+  const addItem = (iconKey, labelText, onClick) => {
+    const item = h("div", "sel-item");
+    item.appendChild(iconSpan(iconKey, 16));
+    item.appendChild(h("span", null, labelText));
+    item.onclick = (e) => {
+      e.stopPropagation();
+      wrap.classList.remove("open");
+      onClick();
+    };
+    menu.appendChild(item);
+  };
+
+  // 手机上的底部条只放 5 个主入口,其余的(已关注/刷新/外观/语言)都收在这儿。
+  // 桌面上这些在左侧导航里也有 —— 重复但无害,而且当快捷入口挺方便。
+  addItem("user", t("tab_following"), () => navigate("#/following"));
+
+  // 手机上不给"刷新":手机本来就能下拉刷新页面,菜单里再来一个纯属多余。
+  // 桌面上留着,因为左侧竖栏虽然也有,但走菜单更快。
+  if (window.innerWidth > 700) {
+    addItem("refresh", t("refresh"), () => loadList());
+  }
+
+  const theme = currentTheme();
+  addItem(theme === "light" ? "sun" : "moon",
+          t(theme === "light" ? "theme_light" : "theme_dark"),
+          () => {
+            const next = theme === "light" ? "dark" : "light";
+            localStorage.setItem("theme", next);
+            applyTheme(next);
+            buildRail();
+            renderUserMenu();
+          });
+
+  addItem("globe", t(lang === "zh" ? "lang_zh" : "lang_en"), () => {
+    lang = lang === "zh" ? "en" : "zh";
+    localStorage.setItem("ui_lang", lang);
+    buildRail();
+    renderNavMenu();
+    renderUserMenu();
+    route();
+  });
+
+  addItem("logout", t("logout"), async () => {
     try {
       await fetch(API + "/auth/logout", { method: "POST", credentials: "include" });
     } catch { /* 退出失败也照常走 */ }
     location.reload();          // 重新走一遍启动流程 —— 会停在登录页
-  };
-  menu.appendChild(out);
+  });
+
   wrap.appendChild(menu);
 
   btn.onclick = (e) => {
@@ -1378,19 +1499,60 @@ function renderLoginScreen(me) {
   listEl.appendChild(box);
 }
 
+// ---- 标题旁边的导航下拉(手机上用)----
+// 手机上不显示左侧竖栏,把这个下拉放在大标题右边代替它。
+// 大屏幕上它是隐藏的 —— 那边有竖栏,不需要再来一个。
+const navMenuEl = document.getElementById("navmenu");
+
+function renderNavMenu() {
+  navMenuEl.replaceChildren();
+
+  const wrap = h("div", "sel more");
+  const btn = h("button", "icon-btn");
+  btn.title = t("menu");
+  btn.appendChild(iconSpan("chevronDown", 22));
+  wrap.appendChild(btn);
+
+  const menu = h("div", "sel-menu");
+  NAV.forEach(([tab, labelKey, iconKey]) => {
+    const item = h("div", "sel-item");
+    item.appendChild(iconSpan(iconKey, 16));
+    item.appendChild(h("span", null, t(labelKey)));
+    item.onclick = (e) => {
+      e.stopPropagation();
+      wrap.classList.remove("open");
+      navigate("#/" + tab);
+    };
+    menu.appendChild(item);
+  });
+  wrap.appendChild(menu);
+
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = wrap.classList.contains("open");
+    document.querySelectorAll(".sel.open").forEach(s => s.classList.remove("open"));
+    if (!wasOpen) wrap.classList.add("open");
+  };
+  navMenuEl.appendChild(wrap);
+}
+
 function showLoginPrompt() {
   renderLoginScreen({ logged_in: false, oauth_ready: true });
 }
 
-function sortRecommend(items) {
-  const copy = items.slice();
-  if (state.sort === "stars") copy.sort((a, b) => b.stargazers_count - a.stargazers_count);
-  else if (state.sort === "name") copy.sort((a, b) => a.full_name.localeCompare(b.full_name));
-  return copy;   // "similarity" = 服务端原序
-}
-
 // 渲染"列表类"页面(推荐 / Trending / 标签 / 我的 / 搜索)
 async function loadList() {
+  // ⚠️ 详情页不归这个函数管,拦在源头。
+  //
+  // 它下面那条 if 链只覆盖"列表类"页面,最后的 else 是"已收藏"。
+  // 所以在详情页误调它(比如点刷新),会掉进 else ——
+  // 整页被换成 star 列表;同时 setTitle 拼出 "tab_detail",
+  // I18N 里没这个 key、t() 原样返回,页头就直接显示这串原始 key。
+  // 而地址栏还停在 #/repo/... ,页面和 URL 对不上,后退键也跟着乱。
+  //
+  // 交给 route() 重走一遍:它就是"按当前 URL 重新渲染"的唯一入口。
+  if (state.tab === "detail") return route();
+
   showPageBack(false);                // 列表页不需要返回按钮
   detailEl.style.display = "none";
   detailEl.replaceChildren();
@@ -1443,13 +1605,15 @@ async function loadList() {
         empty: state.tags.length ? t("tag_empty") : undefined,
       });
     } else if (state.tab === "recommend") {
-      const d = await getJSON(`/api/recommend?limit=${PAGE}&offset=${state.offset}`);
+      // 第一批。后面靠滚到底自动加载(loadMoreRecommend),不再有"换一批"
+      const d = await getJSON(
+        `/api/recommend?limit=${PAGE}&offset=0&sort=${encodeURIComponent(state.sort)}`);
+      state.offset = d.count;
       state.hasMore = d.has_more;
-      const batch = Math.floor(d.offset / PAGE) + 1;
-      render(sortRecommend(d.items), {
-        feedback: true,
-        summary: t(d.has_more ? "summary_batch" : "summary_batch_end", batch, d.items.length),
-      });
+      listEl.replaceChildren();
+      d.items.forEach(r => listEl.appendChild(repoPost(r, { feedback: true })));
+      appendMoreSentinel();
+      statusEl.textContent = t("summary_recommend", d.count);
     } else if (state.tab === "tags") {
       renderTagCloud(await getJSON("/api/tags?limit=200"));
     } else if (state.tab === "following") {
@@ -1472,6 +1636,20 @@ syncRailOpen();
 window.addEventListener("resize", syncRailOpen);   // 拖窗口大小时跟着变
 document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
 
+// 页面标题在这里**同步**设好,不放进下面那个异步流程。
+// 原因:异步流程要等 /api/me 回来(几百毫秒),那段时间里页面会先显示
+// HTML 里的初始值,再跳成正确的标题 —— 看起来像"先 Trending,然后才变成为你推荐"。
+// 标题只依赖 URL,现在就能算出来,没必要等。
+function titleKeyForHash() {
+  const head = (location.hash.replace(/^#\/?/, "").split("?")[0]
+    .split("/").filter(Boolean)[0]) || "recommend";
+  if (head === "repo") return null;        // 详情页标题是仓库名,那得等数据回来
+  if (head === "tag") return "tab_tags";
+  return "tab_" + (TABS.includes(head) ? head : "recommend");
+}
+const _initialTitle = titleKeyForHash();
+if (_initialTitle) titleEl.textContent = t(_initialTitle);
+
 (async () => {
   // 先问一句"我是谁":**没登录就直接停在登录页**,不要先闪一下主界面再到处报错
   const me = await getJSON("/api/me").catch(() => ({ logged_in: false }));
@@ -1481,6 +1659,7 @@ document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     return;
   }
   buildRail();
+  renderNavMenu();          // 手机上的导航下拉(大屏幕下 CSS 会把它藏起来)
   // 没有 hash 就补一个,并且用 replaceState —— 别让"进入网站"本身占用一条历史记录
   if (!location.hash) history.replaceState(null, "", "#/recommend");
   renderUserMenu();

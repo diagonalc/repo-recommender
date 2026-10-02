@@ -26,7 +26,9 @@ import auth
 import db
 
 COOKIE = "repos_sid"        # 会话 cookie:登录后发,退出登录删
-STATE_COOKIE = "repos_state"  # OAuth 的防 CSRF 随机串,只在登录过程中存活
+# 注:OAuth 的 state 以前也放 cookie,现在改成存服务端(见 db.save_state)。
+# 手机浏览器策略、以及"从 127.0.0.1 发起登录但回调跳到公开域名"这两种情况,
+# 都会让那个 cookie 送不回来,表现为登录时报"state 不匹配"。
 
 
 @asynccontextmanager
@@ -81,9 +83,12 @@ def auth_login(request: Request):
     # (隧道后面请求是 http,而用户看到的是 https,直接推会错)。
     redirect_uri = auth.redirect_uri(str(request.base_url))
 
-    resp = RedirectResponse(auth.authorize_url(client_id, redirect_uri, state))
-    resp.set_cookie(STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
-    return resp
+    # state 记在**服务端**,不用 cookie(原因见 db.save_state 上面的注释)
+    conn = db.get_conn()
+    db.init_db(conn)
+    db.save_state(conn, state)
+
+    return RedirectResponse(auth.authorize_url(client_id, redirect_uri, state))
 
 
 @app.get("/auth/callback")
@@ -95,10 +100,14 @@ def auth_callback(request: Request, code: str = None, state: str = None,
     if not code:
         raise HTTPException(status_code=400, detail="没收到 code")
 
-    # state 必须和登录时发出去的一致 —— 防的是"别人拿你的浏览器偷偷登录他的账号"
-    expect = request.cookies.get(STATE_COOKIE)
-    if not expect or expect != state:
-        raise HTTPException(status_code=400, detail="state 不匹配(可能是跨站攻击,或者 cookie 丢了)")
+    conn = db.get_conn()
+    db.init_db(conn)
+
+    # state 必须是我们发出去过的(防 CSRF)。是就删掉,一条只能用一次。
+    if not db.consume_state(conn, state):
+        raise HTTPException(
+            status_code=400,
+            detail="这个登录链接无效或已过期 —— 回首页重新点一次登录")
 
     redirect_uri = auth.redirect_uri(str(request.base_url))
     try:
@@ -107,13 +116,10 @@ def auth_callback(request: Request, code: str = None, state: str = None,
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    conn = db.get_conn()
-    db.init_db(conn)                      # 保证用户表在(首次登录时可能还没建过)
     user_id, _is_new = db.upsert_user(conn, gh)
     sid = db.create_session(conn, user_id)
 
     resp = RedirectResponse("/")
-    resp.delete_cookie(STATE_COOKIE)
     resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax",
                     max_age=60 * 60 * 24 * 30)   # 30 天
     return resp
@@ -475,12 +481,21 @@ def star_repo(request: Request, full_name: str):
         raise HTTPException(status_code=409,
                             detail="你的账号没有可用的 GitHub token,退出后重新登录一次")
 
-    r = requests.put(
-        f"https://api.github.com/user/starred/{full_name}",
-        headers={"Authorization": f"token {token}",
-                 "Accept": "application/vnd.github+json",
-                 "Content-Length": "0"},
-        timeout=30)
+    try:
+        r = requests.put(
+            f"https://api.github.com/user/starred/{full_name}",
+            headers={"Authorization": f"token {token}",
+                     "Accept": "application/vnd.github+json",
+                     "Content-Length": "0"},
+            timeout=30)
+    except requests.RequestException as e:
+        # 这里原来**完全没有 try** —— 代理一抖就是一个 500。
+        # 用户看到光秃秃的 "Internal Server Error":既不知道是网络问题,
+        # 也不知道该不该重试、更不知道该去查代理。
+        # (2026-10-02 采集任务崩溃的就是同一类异常,那次丢了一整天数据。)
+        raise HTTPException(
+            status_code=502,
+            detail=f"连不上 GitHub:{type(e).__name__}。检查代理是否正常,稍后再试")
 
     if r.status_code == 204:
         # 本地也记一笔,界面立刻能反映。以后跑 sync_stars 会用真实时间覆盖。
@@ -523,7 +538,8 @@ def my_starred(request: Request, limit: int = 200):
 
 
 @app.get("/api/recommend")
-def api_recommend(request: Request, limit: int = 20, offset: int = 0):
+def api_recommend(request: Request, limit: int = 20, offset: int = 0,
+                  sort: str = "similarity"):
     """P6:内容相似推荐。
 
     offset 用来"换一批":推荐是按分数排好的一个长列表,把 offset 往后移
@@ -540,7 +556,7 @@ def api_recommend(request: Request, limit: int = 20, offset: int = 0):
     offset = max(0, offset)
     conn = db.get_conn()
     try:
-        items = recommend_for(conn, user["id"], limit, offset)
+        items = recommend_for(conn, user["id"], limit, offset, sort)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {
@@ -674,9 +690,19 @@ def post_event(request: Request, ev: EventIn):
 
 
 @app.get("/api/events")
-def list_events(limit: int = 20):
+def list_events(request: Request, limit: int = 20):
+    """**当前登录的人**的反馈流水,最近的在前。
+
+    前端目前不调这个接口(它只 POST 提交反馈),留着是为了排查
+    "我当时到底点了什么"。
+
+    ⚠️ 必须 require_user + 按人过滤。原来是全表返回、还不校验登录 ——
+    多用户上线后,任何人不登录就能读到所有人的点赞记录。
+    """
+    user = require_user(request)
+    limit = max(1, min(limit, 200))      # 别让 ?limit=999999 拉出整张表
     conn = db.get_conn()
-    return {"items": [dict(r) for r in db.recent_events(conn, limit)]}
+    return {"items": [dict(r) for r in db.recent_events(conn, user["id"], limit)]}
 
 
 @app.get("/api/opinions")
@@ -695,6 +721,22 @@ def my_opinions(request: Request):
 # 后面的接口就永远匹配不到(第一次就踩了这个坑:插在文件中间,导致它之后注册的
 # /api/me/starred、/api/recommend 等全部 404)。
 # 好处是前后端**同一个端口、同源** —— 不用配 CORS,session cookie 也能正常带。
+class NoCacheStatic(StaticFiles):
+    """给静态文件加上 no-cache 头。
+
+    为什么需要:默认情况下浏览器会对静态文件做**启发式缓存**,手机浏览器尤其顽固 ——
+    改完代码刷新半天看不到新版本,很容易误判成"代码没生效"(我们已经为此浪费过好几轮时间)。
+
+    加上 no-cache 之后,浏览器每次都会问一句"变了没":
+    文件没变就返回 304(只有几十字节),变了几毫秒就拿到新的。**既不会看到旧版本,也不会变慢。**
+    """
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 if os.path.isdir(_WEB_DIR):
-    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+    app.mount("/", NoCacheStatic(directory=_WEB_DIR, html=True), name="web")
