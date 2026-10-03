@@ -7,21 +7,23 @@
 <style>
   /* 视觉参照 Threads / X:纯黑底、窄栏内容、细线分隔、导航竖排在右侧。
      导航可以折成只剩图标(窄屏自动折),内容区跟着让位。 */
-  /* 兔子洞页首那句日文的字体:Hachi Maru Pop(手写圆体,连「！」都是个小爱心)。
-     Google Fonts 出品,开源许可(OFL),可以自己托管。
+  /* 兔子洞页首那句日文的字体:Donguriko(どんぐりこ,toktaro fonts 出品的手写体)。
+     **免费版只收录平假名和标点,没有汉字** —— 所以标题里的「穴」写成了假名「あな」。
+     许可证:免费版允许个人使用;商用需要关注作者的账号。
 
      ⚠️ **这份是子集化的,不是完整字体。**
-     完整的 Hachi Maru Pop 有 **4.18 MB**(日文字库几千个字形),
-     而我们只需要标题里那 10 个字符 —— pyftsubset 之后是 **500 字节**。
-     这是引入日文字体的唯一可行方式:不子集的话,为了一句标题要拖来几兆的东西,
-     正好是之前花力气干掉的那类大文件(8.4 MB 的背景图那次)。
+     完整字重 35 KB,我们只要标题那 11 个字符 —— pyftsubset 之后 **1.9 KB**。
+     (日文字体动辄几 MB,不子集的话为了一句标题要拖来几兆的东西,
+      正好是之前花力气干掉的那类大文件。)
 
-     ⚠️ 所以**改标题文字时要重新生成这个文件** —— 字体里只含现在这几个字,
-     新加的字会掉回系统字体,看起来像"只有一部分用了新字体"。
-     生成命令:
-       pyftsubset 全量字体.ttf --text="うさぎの穴へようこそ！" \
-         --output-file=web/acg-title.woff2 --flavor=woff2 --no-hinting
-     另外它没有版本号,换了之后浏览器可能要 4 小时才更新(Cloudflare 的缓存)。 */
+     ⚠️ **改标题文字 = 必须重新生成这个文件。** 字体里只有现在这几个字,
+     新加的字会掉回系统字体 —— 表现出来是"只有一部分字用了新字体",很难看出原因。
+     `tests/check_frontend.py` 里有一条测试专门盯这个:
+     它会从 app.js 里读出 ACG_TITLE,再核对字体里有没有这些字。
+     生成方式(注意别用 shell 变量,曾经因此产出过空字体):
+       .venv/bin/python -m fontTools.subset 全量字体.ttf \
+         --text="うさぎのあなへようこそ！" --output-file=web/acg-title.woff2 \
+         --flavor=woff2 --no-hinting --layout-features= */
   @font-face {
     font-family: "ACG Title";
     /* ?v=__FONT_V__ 是**内容哈希**,由 api.py 在返回 HTML 时替换。
@@ -238,10 +240,15 @@
      顺带把字号提一号、取消字距微调(那个 -0.015em 是给无衬线体调的,
      换手写体之后反而会挤在一起)。 */
   body.acg .headrow h1 {
-    /* 先排我们的日文子集字体,再兜底到花体(万一以后标题里混了拉丁字母)。
-       浏览器是按**字形**回退的:新字体里有的用它,没有的往下一个找。 */
-    font-family: "ACG Title", var(--font-fancy);
-    letter-spacing: normal; font-size: 23px;
+    /* ⚠️ 这里**刻意只留一个兜底**(继承页面的默认字体)。
+       原来写的是 `"ACG Title", var(--font-fancy)` —— 那一串花体全是拉丁字体,
+       对假名一个字形都没有,浏览器会**跳过它们去找通用族 `cursive`**,
+       而 Windows 把日文的 cursive 解析成一个明朝体。
+       结果标题刷新时会变两次:无衬线 → 明朝体 → Donguriko。
+       现在少一层:无衬线 → Donguriko。再加上 <head> 里的 preload,
+       字体基本能在文字出现之前就绪,那一跳也就看不到了。 */
+    font-family: "ACG Title";
+    letter-spacing: normal; font-size: 26px;
   }
   /* 展开时也要更宽 —— 不然 72px 图标 + 站名两样挤不下。
      选择器写成 body.acg .rail:hover(三个类 + 伪类),权重压得过原来的 .rail:hover。 */

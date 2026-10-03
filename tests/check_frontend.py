@@ -260,7 +260,15 @@ def main():
     except ImportError:
         warn("没装 fonttools,跳过字体检查", "(pip install fonttools)")
     else:
-        refs = re.findall(r'url\("(/[^"]+\.woff2?)"\)', html)
+        # 注意允许后面跟 ?v=xxxx —— 字体 URL 现在带内容哈希做缓存失效,
+        # 写成"必须以 .woff2 结尾"会一个都匹配不到(那样测试会静默失效)
+        # 兔子洞标题 —— 字体就是照它子集化的,所以必须能覆盖它每一个字。
+        # 从 app.js 里读出来,而不是在这儿再抄一遍:抄一遍就迟早会抄漏。
+        m = re.search(r'ACG_TITLE\s*=\s*"([^"]+)"', src)
+        title = m.group(1) if m else ""
+        if not title:
+            warn("没找到 ACG_TITLE,没法核对字体覆盖")
+        refs = re.findall(r'url\("(/[^"?]+\.woff2?)(?:\?[^"]*)?"\)', html)
         if not refs:
             print("  (样式里没有引用字体文件)")
         for ref in refs:
@@ -268,9 +276,14 @@ def main():
             if not os.path.exists(path):
                 check(f"{ref} 存在", False)
                 continue
-            cmap = TTFont(path).getBestCmap()
-            n = len(cmap) if cmap else 0
-            check(f"{ref} 里有字形映射", n >= 2, f"({n} 个字符)")
+            cmap = TTFont(path).getBestCmap() or {}
+            check(f"{ref} 里有字形映射", len(cmap) >= 2, f"({len(cmap)} 个字符)")
+            if title:
+                # 这条是真会咬人的:改了标题却没重新生成子集,
+                # 少的那几个字会静默地掉回系统字体 —— 页面上只有它们长得不一样
+                missing = sorted({c for c in title if ord(c) not in cmap})
+                check(f"{ref} 覆盖标题「{title}」", not missing,
+                      f"缺 {''.join(missing)} —— 要重新生成子集" if missing else "")
 
     print()
     if FAILED:
