@@ -61,8 +61,10 @@
 | `daily_update.py` | **P3**:每天跑一次 —— 刷新元数据 + 记录当天 star 数快照 |
 | `trending.py` | **P3**:对比两次快照,算"涨得最快"的榜 |
 | `fetch_readmes.py` | **P6**:抓 README 原文(算相似度要用的文本素材) |
-| `sync_stars.py` | **P4**:同步某个用户 star 过的仓库 |
-| `sync_following.py` | 同步某个用户关注的开发者 |
+| `sync_stars.py` | **P4**:同步**一个**用户 star 过的仓库 |
+| `sync_following.py` | 同步**一个**用户关注的开发者 |
+| `sync_all.py` | 给**所有**登录过的用户跑上面两个(每日任务调的就是它) |
+| `sync_common.py` | 上面两个共用的分页取数 + 错误类型 |
 | `autotag.py` | 给"作者没设标签"的仓库自动补标签 |
 | `gh_search.py` | 全站搜索(即时查 GitHub,不是查本地库) |
 
@@ -105,7 +107,9 @@
 | 文件 | 干什么 |
 |---|---|
 | `run_server.sh` | 启动网站服务(端口写在这里) |
-| `run_daily.sh` | 每天定时任务的入口(带 flock 单实例锁) |
+| `run_daily.sh` | 每天定时任务的入口(备份 → 采集 → 同步;带 flock 单实例锁) |
+| `backup_db.py` | 数据库备份(用 sqlite3 的 backup 接口,WAL 安全) |
+| `ratelimit.py` | 按 IP 限流,保护**共享的** GitHub / 翻译额度 |
 | `RepoRecommenderDaily.xml` | Windows 任务计划的定义(定时采集) |
 | `tests/` | `test_fetch_retry.py`(回归)+ `smoke_api.py`(冒烟) |
 | `README.md` | 门面:能做什么、怎么跑、文件清单 |
@@ -155,10 +159,19 @@ Windows 任务计划(每天 10:17 和 18:17 各一次)
    → repo-recommender-daily.bat
    → wsl.exe 启动 WSL
    → run_daily.sh(flock:同一时刻只允许一个实例)
-   → daily_update.py
-   → fetch_repos 拉 12 页(6 种语言 × 2 页)
-   → 写进 repos 表(更新)+ repo_snapshots(记今天的 star 数)
+   │
+   ├─ ① daily_update.py            ← 最要紧的一步,先跑
+   │     fetch_repos 拉 12 页(6 种语言 × 2 页)
+   │     写进 repos 表(更新)+ repo_snapshots(记今天的 star 数)
+   │
+   └─ ② sync_all.py                ← 采集成功后才跑
+         给每个登录过的用户同步 star / 关注
+         (推荐的口味信号来自 star;不同步的话新用户推荐页永远是空的)
 ```
+
+**两步的顺序不能反**:同步可能要跑很久(每人好几页、每页之间要 sleep),
+放在前面一旦卡住,这天就**一份快照都没有** —— 而快照缺一天,
+trending 的增速就永远缺那一天的对比,事后补不回来。同步则不同,它幂等,明天再跑一遍就是了。
 
 **这条链路被坑过两次:**
 1. 最先是配在 WSL 里的 cron,**六天一次都没跑** —— 因为 WSL 不启动,cron 根本不存在。
@@ -256,10 +269,8 @@ P9     ✅ 完成(每日自动更新 + 公网部署)
 
 ## 八、还没做的
 
-1. **定时同步用户的 star / 关注** —— `sync_stars.py` / `sync_following.py` 现在要手动跑,
-   没加进每日任务。**别人登录进来推荐页是空的,就是因为这个** —— 没有 star 就没有口味信号。
-2. **token 加密存储** —— 用户的 GitHub token 现在是**明文存在库里**。
-3. **开机自启** —— uvicorn 和 cloudflared 都要手动拉起,电脑重启后网站是断的。
-4. **会话 cookie 加 `Secure` 标志** —— 现在有 HTTPS 了,可以加了。
-5. **速率限制 / 健康检查接口** —— 对陌生人开放前该有。
-6. **数据库自动备份** —— 现在没有。(备份时注意 WAL 那个坑,见 [DEVLOG.md](DEVLOG.md))
+1. **token 加密存储** —— 用户的 GitHub token 现在是**明文存在库里**。
+   评估见 [DEVLOG.md](DEVLOG.md#关于token-明文要不要加密):单机自用的风险比听起来小
+   (已验证没有任何接口会把它漏出去),但如果哪天要把库文件拷走,值得加。
+2. **开机自启** —— uvicorn 和 cloudflared 都要手动拉起,电脑重启后网站是断的。
+   **暂时不做**:之后会换到别的设备上,到时候一起配更省事。

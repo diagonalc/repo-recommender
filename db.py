@@ -143,6 +143,31 @@ def _table_columns(conn, table):
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _add_column(conn, table, column, decl):
+    """给已有的表补一列(缺了才补)。
+
+    SQLite 支持直接 ADD COLUMN —— 和改主键 / 改 CHECK 约束不一样,不用重建表、
+    不会碰已有的数据。所以可以放心地每次启动都调:第二次开始它什么都不做。
+
+    (原来每个补列的地方都手写一遍 PRAGMA 判断,加到第三处时就该抽出来了。)
+    """
+    cols = _table_columns(conn, table)
+    if cols and column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        conn.commit()
+        print(f"[migrate] {table} 表补上 {column} 列")
+
+
+def _migrate_users_token_status(conn):
+    """给 users 补上 token_ok / token_checked_at。
+
+    老库没有这两列。补的时候默认 token_ok=1(先当它是好的)——
+    真实状态等下一次同步去核实,不必在这里猜。
+    """
+    _add_column(conn, "users", "token_ok", "INTEGER NOT NULL DEFAULT 1")
+    _add_column(conn, "users", "token_checked_at", "TEXT")
+
+
 def ensure_local_user(conn):
     """保证有一个"我"的占位用户,返回它的 id。
 
@@ -167,7 +192,14 @@ def upsert_user(conn, gh):
     row = conn.execute("SELECT id FROM users WHERE gh_id = ?",
                        (gh.get("id"),)).fetchone()
     if row:
-        conn.execute("""UPDATE users SET login=?, name=?, avatar_url=?, token=?
+        # 重新登录 = 换到了新 token,所以 token_ok 必须重置回 1。
+        #
+        # 不重置的话:用户重新登录成功了,页面上那条"你的授权已失效,
+        # 去重新登录"的提示还会一直挂着 —— 而他刚刚照做过了。
+        # 一条让人没法消除的提示,比没有提示更糟。
+        conn.execute("""UPDATE users
+                        SET login=?, name=?, avatar_url=?, token=?,
+                            token_ok=1, token_checked_at=NULL
                         WHERE id=?""",
                      (gh.get("login"), gh.get("name"), gh.get("avatar_url"),
                       gh.get("token"), row["id"]))
@@ -195,7 +227,9 @@ def upsert_user(conn, gh):
     if ph and conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1:
         print(f"[user] 认领占位用户 id={ph['id']}(单用户库升级上来的历史数据)"
               f" → {gh.get('login')}")
-        conn.execute("""UPDATE users SET gh_id=?, login=?, name=?, avatar_url=?, token=?
+        conn.execute("""UPDATE users
+                        SET gh_id=?, login=?, name=?, avatar_url=?, token=?,
+                            token_ok=1, token_checked_at=NULL
                         WHERE id=?""",
                      (gh.get("id"), gh.get("login"), gh.get("name"),
                       gh.get("avatar_url"), gh.get("token"), ph["id"]))
@@ -212,13 +246,33 @@ def upsert_user(conn, gh):
 
 def get_user(conn, user_id):
     return conn.execute(
-        "SELECT id, gh_id, login, name, avatar_url FROM users WHERE id = ?",
+        "SELECT id, gh_id, login, name, avatar_url, token_ok, token_checked_at "
+        "FROM users WHERE id = ?",
         (user_id,)).fetchone()
 
 
 def user_token(conn, user_id):
     row = conn.execute("SELECT token FROM users WHERE id = ?", (user_id,)).fetchone()
     return row["token"] if row else None
+
+
+def set_token_status(conn, user_id, ok):
+    """记下"这个人的 token 还管不管用"。
+
+    由同步脚本调用(见 sync_stars.sync_user):拿到数据就记 1,
+    被 GitHub 回 401 就记 0。
+
+    **为什么必须存下来**:token 失效是完全静默的 ——
+    页面照常打开、推荐照常出现(用的都是旧数据),唯一的区别是
+    "新 star 不再被同步进来"。没有这一列的话,这件事只存在于日志里,
+    用户只会觉得"这站坏了",不会想到是自己需要重新登录一次。
+    """
+    conn.execute("""
+        UPDATE users
+        SET token_ok = ?,
+            token_checked_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        WHERE id = ?""", (1 if ok else 0, user_id))
+    conn.commit()
 
 
 # ---------------- 会话 ----------------
@@ -232,11 +286,15 @@ def create_session(conn, user_id):
 
 
 def user_by_session(conn, token):
-    """按会话串找人。找不到(或没传)返回 None。"""
+    """按会话串找人。找不到(或没传)返回 None。
+
+    带上 token_ok —— /api/me 要用它决定"要不要在页面上提示用户去重新登录"。
+    """
     if not token:
         return None
     return conn.execute("""
-        SELECT u.id, u.gh_id, u.login, u.name, u.avatar_url
+        SELECT u.id, u.gh_id, u.login, u.name, u.avatar_url,
+               u.token_ok, u.token_checked_at
         FROM sessions AS s JOIN users AS u ON u.id = s.user_id
         WHERE s.token = ?""", (token,)).fetchone()
 
@@ -249,6 +307,19 @@ def delete_session(conn, token):
 
 def count_users(conn):
     return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+
+def users_with_token(conn):
+    """所有"有 token、能替他拉数据"的用户。
+
+    给每⽇同步用(sync_all.py):要给**每个**登录过的人同步 star / 关注。
+    没有 token 的用户跳过 —— 那多半是还没有人真正登录过他的账号,
+    或者是升级上来的占位用户,拿不到东西去同步。
+    """
+    return conn.execute("""
+        SELECT id, login FROM users
+        WHERE token IS NOT NULL AND token != ''
+        ORDER BY id""").fetchall()
 
 
 # ---------------- OAuth state(防 CSRF)----------------
@@ -382,6 +453,7 @@ def init_db(conn):
         conn.executescript(f.read())
     conn.commit()
     _migrate_events(conn)
+    _migrate_users_token_status(conn)
     _migrate_multiuser(conn)     # 放最后:它给 events/comments 加 user_id,别被前面的重建覆盖掉
 
 
@@ -602,13 +674,33 @@ def rows_by_full_names(conn, names):
         tuple(names)).fetchall()
 
 
-def search_repos(conn, q, limit=60):
+# 搜索结果的排序方式。
+# ⚠️ 这份字典同时是**白名单** —— 下面的 ORDER BY 是把它的值直接拼进 SQL 的
+# (ORDER BY 的列名没法用 ? 占位)。所以只能从这儿加排序方式,
+# 绝不能拿用户传来的字符串往 SQL 里拼。
+SEARCH_SORTS = {
+    # "相关度" = 命中位置分级:名字 > 描述 > 标签 > README
+    "relevance": "rank ASC, stargazers_count DESC, full_name COLLATE NOCASE",
+    "stars":     "stargazers_count DESC, full_name COLLATE NOCASE",
+    "name":      "full_name COLLATE NOCASE ASC",
+    "pushed":    "pushed_at DESC",
+}
+
+
+def search_repos(conn, q, limit=60, sort="relevance"):
     """按关键词搜 repo:名字、描述、标签、README、自动标签都翻一遍。
 
-    排序按"命中在哪儿"分级:名字 > 描述 > 标签 > README。
+    默认按"命中在哪儿"分级:名字 > 描述 > 标签 > README。
     不做分级的话,一个在 README 里顺带提了一句的 repo 会和名字直接命中的
     排在一起,最相关的那几个反而要翻半天。
+
+    sort 见 SEARCH_SORTS。
+
+    ⚠️ 每种排序末尾都补了 full_name 之类的**次级排序**:ORDER BY 必须最终
+    落到一个唯一的值上。否则 star 相同的那些行每次查询的先后顺序都可能不同 ——
+    表现是刷新一下内容就跳位置,而且极难复现。
     """
+    order = SEARCH_SORTS.get(sort, SEARCH_SORTS["relevance"])
     like = f"%{q}%"
     return conn.execute(f"""
         SELECT {API_COLS},
@@ -620,16 +712,27 @@ def search_repos(conn, q, limit=60):
         WHERE full_name LIKE :q OR description LIKE :q OR topics LIKE :q
            OR id IN (SELECT repo_id FROM readmes   WHERE content LIKE :q)
            OR id IN (SELECT repo_id FROM auto_tags WHERE tag     LIKE :q)
-        ORDER BY rank ASC, stargazers_count DESC
+        ORDER BY {order}
         LIMIT :lim""", {"q": like, "lim": limit}).fetchall()
 
 
-def list_tags(conn, limit=300):
+def list_tags(conn, limit=300, q=None):
     """所有标签 + 各自带多少个 repo,按数量从多到少。
 
     两个来源合并:作者设的 topics,和我们自动补的 auto_tags。
+
+    q 按**标签名**过滤(标签页上的搜索框)。
+
+    ⚠️ 过滤必须放在 SQL 里、不能拉回来在前端筛:`LIMIT` 截的是
+    "数量最多的前 N 个",一个冷门标签很可能根本不在那 N 个里面 ——
+    前端筛的话,你搜它永远搜不到,而且看不出是为什么。
+    放在 WHERE 里,LIMIT 作用的是**筛完之后**的结果。
     """
-    return conn.execute("""
+    where, params = "", []
+    if q:
+        where = "WHERE tag LIKE ?"
+        params.append(f"%{q}%")
+    return conn.execute(f"""
         SELECT tag, COUNT(*) AS n FROM (
             SELECT j.value AS tag
             FROM repos, json_each(repos.topics) AS j
@@ -637,9 +740,153 @@ def list_tags(conn, limit=300):
             UNION ALL
             SELECT tag FROM auto_tags WHERE tag IS NOT NULL AND tag != ''
         )
+        {where}
         GROUP BY tag
         ORDER BY n DESC, tag ASC
-        LIMIT ?""", (limit,)).fetchall()
+        LIMIT ?""", (*params, limit)).fetchall()
+
+
+# ---------------- 二次元分站 ----------------
+# 一张"按关键词筛出来的名单"。数据由 fetch_acg.py 抓,和候选池分开存。
+
+# 同样:这个字典同时是白名单(ORDER BY 的列名没法用 ? 占位)。
+# "relevance" 只有在带 q(搜索)时才有意义 —— 没搜索词时 rank 列不存在,
+# 会自动回退成 stars,见 list_acg。
+ACG_SORTS = {
+    "relevance": "rank ASC, r.stargazers_count DESC, r.full_name COLLATE NOCASE",
+    "stars":  "r.stargazers_count DESC, r.full_name COLLATE NOCASE",
+    "name":   "r.full_name COLLATE NOCASE ASC",
+    "pushed": "r.pushed_at DESC, r.full_name COLLATE NOCASE",
+    "added":  "a.added_at DESC, r.full_name COLLATE NOCASE",
+}
+
+
+def save_acg(conn, repo_ids, source):
+    """记下一批仓库"属于二次元集合"。返回写入的行数。
+
+    幂等:主键就是 repo_id,重复跑只更新 source,不会翻倍 ——
+    所以可以放心地反复跑采集、反复调关键词表。
+
+    source 会被**最后一次**找到它的那条查询词覆盖。一个仓库常常被多条查询
+    同时命中,记最后一条就够了:它只是调关键词表时的线索,不需要精确留档。
+    """
+    repo_ids = [r for r in repo_ids if r]
+    if not repo_ids:
+        return 0
+    conn.executemany("""
+        INSERT INTO acg_repos (repo_id, source) VALUES (?, ?)
+        ON CONFLICT(repo_id) DO UPDATE SET source = excluded.source
+    """, [(rid, source) for rid in repo_ids])
+    conn.commit()
+    return len(repo_ids)
+
+
+def count_acg(conn):
+    return conn.execute("SELECT COUNT(*) AS n FROM acg_repos").fetchone()["n"]
+
+
+def acg_source_counts(conn, limit=12):
+    """每条查询词各贡献了多少个仓库 —— 调关键词表时看这个。"""
+    return conn.execute("""
+        SELECT source, COUNT(*) AS n FROM acg_repos
+        GROUP BY source ORDER BY n DESC LIMIT ?""", (limit,)).fetchall()
+
+
+def list_acg(conn, sort="stars", limit=60, offset=0, tags=None, q=None):
+    """兔子洞里的仓库:排序 + 按标签筛 + 按关键词搜。
+
+    和主站那些列表接口最大的区别是:**全部限定在 acg_repos 这份名单里**
+    —— 搜也是只在这份名单里搜,不会把主站那几万个仓库捞进来。
+
+    tags 之间是「与」(和主站一致);标签有两个来源(topics 和 auto_tags),
+    两边都要算 —— 不然自动补的标签点进去会是空的。
+    """
+    # 带搜索词时才有 rank 列。参数顺序要注意:它出现在 SELECT 里,
+    # 所以它的三个 ? 必须排在 WHERE 的参数**前面**(SQLite 按 SQL 文本里的
+    # 出现顺序绑定,不是按子句顺序)。
+    select_extra, params = "", []
+    if q:
+        like = f"%{q}%"
+        select_extra = (", CASE WHEN r.full_name LIKE ? THEN 0 "
+                        "WHEN r.description LIKE ? THEN 1 "
+                        "WHEN r.topics LIKE ? THEN 2 ELSE 3 END AS rank")
+        params += [like, like, like]
+
+    where = []
+    if q:
+        where.append("(r.full_name LIKE ? OR r.description LIKE ? OR r.topics LIKE ?)")
+        params += [like, like, like]
+    for tag in (tags or []):
+        where.append("(EXISTS (SELECT 1 FROM json_each(r.topics) "
+                     "WHERE json_each.value = ?) "
+                     "OR EXISTS (SELECT 1 FROM auto_tags "
+                     "WHERE auto_tags.repo_id = r.id AND auto_tags.tag = ?))")
+        params += [tag, tag]
+
+    # 没搜索词时 rank 列不存在,那个排序方式就没法用 —— 回退成按星数
+    if sort == "relevance" and not q:
+        sort = "stars"
+    order = ACG_SORTS.get(sort, ACG_SORTS["stars"])
+
+    sql = f"""
+        SELECT r.id, r.full_name, r.description, r.language, r.html_url,
+               r.stargazers_count, r.pushed_at, r.topics, a.source
+               {select_extra}
+        FROM acg_repos AS a JOIN repos AS r ON r.id = a.repo_id"""
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
+    return conn.execute(sql, (*params, limit, offset)).fetchall()
+
+
+def count_acg_filtered(conn, tags=None, q=None):
+    """按同样条件筛完之后有多少条 —— 前端要显示"共 N 个,这里显示 M 个"。
+
+    不这么做的话,筛完还显示名单总数,用户会以为"怎么只有这么点"是坏了。
+    """
+    where, params = [], []
+    if q:
+        like = f"%{q}%"
+        where.append("(r.full_name LIKE ? OR r.description LIKE ? OR r.topics LIKE ?)")
+        params += [like, like, like]
+    for tag in (tags or []):
+        where.append("(EXISTS (SELECT 1 FROM json_each(r.topics) "
+                     "WHERE json_each.value = ?) "
+                     "OR EXISTS (SELECT 1 FROM auto_tags "
+                     "WHERE auto_tags.repo_id = r.id AND auto_tags.tag = ?))")
+        params += [tag, tag]
+    sql = "SELECT COUNT(*) AS n FROM acg_repos AS a JOIN repos AS r ON r.id = a.repo_id"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return conn.execute(sql, params).fetchone()["n"]
+
+
+def acg_tags(conn, limit=200, q=None):
+    """兔子洞的标签云 —— 只统计**这份名单里**的仓库。
+
+    不能直接复用主站的 list_tags:那是全库的标签云,
+    点进去会跳到"全站带这个标签的仓库",而分站里应该只看到名单里的。
+    """
+    where, params = "", []
+    if q:
+        where = "WHERE tag LIKE ?"
+        params.append(f"%{q}%")
+    return conn.execute(f"""
+        SELECT tag, COUNT(*) AS n FROM (
+            SELECT j.value AS tag
+            FROM acg_repos AS a
+                 JOIN repos AS r ON r.id = a.repo_id,
+                 json_each(r.topics) AS j
+            WHERE j.value IS NOT NULL AND j.value != ''
+            UNION ALL
+            SELECT t.tag FROM acg_repos AS a
+                 JOIN auto_tags AS t ON t.repo_id = a.repo_id
+            WHERE t.tag IS NOT NULL AND t.tag != ''
+        )
+        {where}
+        GROUP BY tag
+        ORDER BY n DESC, tag ASC
+        LIMIT ?""", (*params, limit)).fetchall()
 
 
 def tag_cloud_count(conn):
@@ -831,7 +1078,7 @@ def starred_list(conn, user_id, limit=200):
     """
     return conn.execute("""
         SELECT r.id, r.full_name, r.description, r.language, r.html_url,
-               r.stargazers_count, r.topics, s.starred_at
+               r.stargazers_count, r.topics, r.pushed_at, s.starred_at
         FROM starred AS s JOIN repos AS r ON r.id = s.repo_id
         WHERE s.user_id = ?
         ORDER BY s.starred_at DESC LIMIT ?""", (user_id, limit)).fetchall()

@@ -41,10 +41,20 @@ MAX_RETRIES = 4     # 撞限流后最多重试几次
 MAX_WAIT = 120      # 单次等待上限(秒),别让脚本睡死
 
 
-def build_params(lang, page):
-    """拼查询参数:按语言筛 + 按 star 降序 + 翻到第 page 页。"""
+def build_params(query, page):
+    """拼查询参数:按 star 降序 + 翻到第 page 页。
+
+    query 是**完整的** GitHub 搜索语法,不是语言名。比如:
+        language:python        日常采集(每个语言一轮)
+        topic:anime            二次元分站(见 fetch_acg.py)
+        waifu in:name          按名字搜
+
+    (以前这里写死成 f"language:{lang}",因为当时只有采集语言这一种用途。
+     加了第二个用途之后才泛化成"传完整查询词" —— 一个只会被用一种方式调用的
+     函数,不值得提前抽象;出现第二个调用方时再改,改起来也就五分钟。)
+    """
     return {
-        "q": f"language:{lang}",
+        "q": query,
         "sort": "stars",
         "order": "desc",
         "per_page": 100,   # 每页最多 100
@@ -78,13 +88,17 @@ def wait_seconds(resp):
     return 30
 
 
-def fetch_page(lang, page):
-    """拉某一语言某一页。
+def fetch_page(query, page, label=None):
+    """按查询词拉一页。
 
-    成功 → 返回 repo 列表(空列表表示这语言没有更多了)。
+    query 是完整的搜索语法(见 build_params);label 只用来打日志。
+    以前签名是 (lang, page),加了二次元采集之后泛化成完整查询词。
+
+    成功 → 返回 repo 列表(空列表表示没有更多了)。
     限流或网络故障、重试多次仍不行 → 抛 **RuntimeError**(不是别的异常类型),
-    让 collect_repos 能接住并只跳过这个语言,而不是把整个 job 炸掉。
+    让调用方能接住并只跳过这一轮,而不是把整个 job 炸掉。
     """
+    label = label or query
     headers = {"Accept": "application/vnd.github+json"}
     if TOKEN:
         headers["Authorization"] = f"token {TOKEN}"
@@ -92,7 +106,7 @@ def fetch_page(lang, page):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = requests.get(BASE_URL, headers=headers,
-                                params=build_params(lang, page), timeout=30)
+                                params=build_params(query, page), timeout=30)
         except requests.RequestException as e:
             # 代理抖动、SSL 中断这类"网络层"错误。
             #
@@ -112,7 +126,7 @@ def fetch_page(lang, page):
                 f"网络错误,重试 {MAX_RETRIES} 次仍失败:{type(e).__name__}: {e}")
 
         remaining = resp.headers.get("X-RateLimit-Remaining")
-        print(f"  {lang} p{page} → HTTP {resp.status_code}(剩余额度 {remaining})")
+        print(f"  {label} p{page} → HTTP {resp.status_code}(剩余额度 {remaining})")
 
         if resp.status_code == 200:
             return resp.json().get("items", [])
@@ -158,7 +172,7 @@ def main():
                 continue
 
             try:
-                repos = fetch_page(lang, page)
+                repos = fetch_page(f"language:{lang}", page, label=lang)
             except RuntimeError as e:
                 print(f"[停] {e}")
                 print(f"当前已入库 {total} 个;下次再跑会自动接着拉。")

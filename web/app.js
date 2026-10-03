@@ -17,6 +17,25 @@ const I18N = {
   zh: {
     tab_trending: "Trending", tab_recommend: "为你推荐", tab_tags: "标签",
     tab_starred: "已收藏", tab_search: "搜索", tab_following: "已关注",
+    tab_acg: "兔子洞",
+    acg_back: "返回主站",
+    acg_tags: "标签",
+    acg_search: "在兔子洞里搜",
+    acg_summary: "共 {0} 个 · 下滑显示更多",
+    acg_no_match: "兔子洞里没搜到匹配的。",
+    acg_tag_title: "共 {0} 个标签 · 点一个看带它的仓库",
+    starred_view_list: "列表",
+    starred_view_status: "现状",
+    status_sort_growth: "最近涨得最快",
+    status_sort_stale: "最久没更新",
+    status_sort_recent: "最近 star 的",
+    status_sort_stars: "星数最多",
+    status_summary: "{0} 个 · 还在更新 {1} · 放缓 {2} · 停更 {3}",
+    health_active: "还在更新", health_slowing: "放缓", health_stale: "停更",
+    health_unknown: "不清楚",
+    days_ago: "{0} 天前", days_today: "今天动过",
+    status_delta_none: "不在快照池里",
+    status_note: "「+N」是最近一次快照(两天)的增量。我们并不知道你 star 它时有多少星 —— 快照是后来才开始记的,所以算不出「从你 star 到现在涨了多少」。",
     summary_following: "你关注的 {0} 个开发者",
     following_empty: "还没有关注数据 —— 跑一次 sync_following.py 就有了。",
     follow_no_match: "没找到匹配的人。",
@@ -29,7 +48,7 @@ const I18N = {
     theme_light: "白天模式", theme_dark: "夜晚模式",
     lang_zh: "中文", lang_en: "English",
     sort_trending: "最近增量", sort_stars: "总星数", sort_pushed: "最近更新", sort_name: "名称",
-    sort_similarity: "相似度",
+    sort_similarity: "相似度", sort_relevance: "相关度", sort_added: "最近收录",
     refresh: "刷新",
     loading: "加载中…", no_data: "没有数据。", error: "出错了:",
     open_github: "在 GitHub 打开", releases: "Releases", back: "返回上一页",
@@ -40,6 +59,8 @@ const I18N = {
     me: "我",
     login: "用 GitHub 登录",
     logout: "退出登录",
+    token_bad: "你的 GitHub 授权已失效,新的 star 不再同步进来了。重新登录一次就能恢复 —— 已有的数据都还在。",
+    token_bad_go: "重新登录",
     login_blurb: "记录你的 star、关注和口味,每天给你推对口味的 repo。",
     login_not_ready: "还没配置 OAuth 凭据:把 Client ID / Secret 填进 ~/.config/repo-recommender/oauth.env",
     snapshots: "star 快照 ({0})", readme: "README",
@@ -50,6 +71,9 @@ const I18N = {
     tag_remove: "点一下移除", tag_add: "点一下筛选",
     tag_empty: "没有同时带这些标签的 repo —— 点掉上面一个试试。",
     tagcloud_title: "{0} 个标签 · 覆盖 {1}/{2} 个 repo",
+    tag_search: "搜索标签",
+    tag_search_hit: "匹配「{0}」的标签 · {1} 个",
+    tag_no_match: "没有匹配的标签。",
     summary_trending: "近两个快照日({0} → {1})增量 Top {2}",
     summary_sorted: "按{0} · {1} 个",
     summary_tags: "{1} 个(标签 {0} · 按{2})",
@@ -69,10 +93,32 @@ const I18N = {
     detail_error: "打不开详情:", starred_at: "star 于", last_push: "最后推送",
     delta_recent: "最近快照 ▲",
     because_starred: "因为你 star 过 ", because_liked: "因为你点过感兴趣 ",
+    reason_explore: "换换口味",
+    reason_explore_plain: "换换口味:它不像你以前 star 过的东西,但很多人在用。留几个这样的位置,是为了让你别只看得到同一类仓库。",
+    reason_explore_growth: "换换口味:它不像你以前 star 过的东西,最近两天还涨了 {0} 颗星。",
   },
   en: {
     tab_trending: "Trending", tab_recommend: "For You", tab_tags: "Tags",
     tab_starred: "Starred", tab_search: "Search", tab_following: "Following",
+    tab_acg: "Rabbit hole",
+    acg_back: "Back to main site",
+    acg_tags: "Tags",
+    acg_search: "Search the rabbit hole",
+    acg_summary: "{0} repos · scroll for more",
+    acg_no_match: "Nothing matched in the rabbit hole.",
+    acg_tag_title: "{0} tags · click one to see its repos",
+    starred_view_list: "List",
+    starred_view_status: "Status",
+    status_sort_growth: "Growing fastest",
+    status_sort_stale: "Least recently updated",
+    status_sort_recent: "Recently starred",
+    status_sort_stars: "Most stars",
+    status_summary: "{0} repos · {1} active · {2} slowing · {3} stale",
+    health_active: "Active", health_slowing: "Slowing", health_stale: "Stale",
+    health_unknown: "Unknown",
+    days_ago: "{0} days ago", days_today: "Updated today",
+    status_delta_none: "not in snapshot pool",
+    status_note: "“+N” is growth over the latest snapshot (~2 days). We do NOT know how many stars it had when you starred it — snapshots started later.",
     summary_following: "{0} developers you follow",
     following_empty: "No following data yet — run sync_following.py once.",
     follow_no_match: "No matching people.",
@@ -86,6 +132,7 @@ const I18N = {
     lang_zh: "中文", lang_en: "English",
     sort_trending: "Recent growth", sort_stars: "Total stars",
     sort_pushed: "Recently updated", sort_name: "Name", sort_similarity: "Similarity",
+    sort_relevance: "Relevance", sort_added: "Recently added",
     refresh: "Refresh",
     loading: "Loading…", no_data: "No data.", error: "Error:",
     open_github: "Open on GitHub", releases: "Releases", back: "Go back",
@@ -96,6 +143,8 @@ const I18N = {
     me: "me",
     login: "Sign in with GitHub",
     logout: "Sign out",
+    token_bad: "Your GitHub authorization has expired, so new stars are no longer syncing. Sign in again to fix it — nothing already saved is lost.",
+    token_bad_go: "Sign in again",
     login_blurb: "Tracks your stars and interests, and recommends repos you'll actually like.",
     login_not_ready: "OAuth credentials not configured: fill Client ID / Secret into oauth.env",
     snapshots: "Star snapshots ({0})", readme: "README",
@@ -106,6 +155,9 @@ const I18N = {
     tag_remove: "Click to remove", tag_add: "Click to filter",
     tag_empty: "No repo has all of these tags — click one above to remove it.",
     tagcloud_title: "{0} tags · {1}/{2} repos",
+    tag_search: "Search tags",
+    tag_search_hit: "Tags matching “{0}” · {1}",
+    tag_no_match: "No tags matched.",
     summary_trending: "Top {2} by growth ({0} → {1})",
     summary_sorted: "{0} · {1} repos",
     summary_tags: "{1} repos (tags {0} · {2})",
@@ -125,6 +177,9 @@ const I18N = {
     detail_error: "Cannot open detail: ", starred_at: "starred", last_push: "last push",
     delta_recent: "since last snapshot ▲",
     because_starred: "because you starred ", because_liked: "because you liked ",
+    reason_explore: "Something different",
+    reason_explore_plain: "Something different: not like what you've starred, but a lot of people use it. A few slots like this keep you from seeing only one kind of repo.",
+    reason_explore_growth: "Something different: not like what you've starred, and it gained {0} stars in the last two days.",
   },
 };
 
@@ -198,11 +253,25 @@ const ICONS = {
   moon:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
     'stroke-linejoin="round"><path d="M20.5 14.6A8.6 8.6 0 019.4 3.5a8.6 8.6 0 1011.1 11.1z"/></svg>',
+  // 站标:天文台(圆顶 + 观测缝 + 地平线)。
+  // 之前是"方框里三条越来越短的横线"(一列条目 = 推荐流的形状),
+  // 换成这个是因为站名叫 Observatory —— 图标和名字对不上就别扭。
+  // 站标:天文台 —— 圆顶 + 从观测缝里伸出来的望远镜。
+  //
+  // 上一版只有"圆顶 + 一条竖线",渲染出来像**一口钟**。加了伸出来的镜筒之后
+  // 才一眼能认出是天文台(镜筒是斜的,而且顶端有个垂直的镜口)。
+  // ⚠️ 别删那截镜口 —— 只有一根斜线的话,看着像天线或者天线杆。
   brand:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
     'stroke-linecap="round" stroke-linejoin="round">' +
-    '<rect x="2.6" y="2.6" width="18.8" height="18.8" rx="5.6"/>' +
-    '<path d="M7.2 8.6h9.6M7.2 12h9.6M7.2 15.4h5.6"/></svg>',
+    '<path d="M2.8 20.6h18.4"/>' +
+    '<path d="M5.4 20.6a6.6 6.6 0 0 1 13.2 0"/>' +
+    '<path d="M12.4 13.9 18.6 7.7"/>' +
+    '<path d="M17.3 6.4 19.9 9"/></svg>',
+  // (这里原来有个叫 anime 的线条图标,想画一个少女。
+  //  渲染出来依次像幽灵 / 外星人 / 披斗篷的人 / 熊脸 —— 四版都不行,
+  //  最后改用用户给的图片了,理由见 railButton 里那段注释。)
+  //
   // 心:空心/实心两版。感兴趣的状态靠"变实心 + 变色"表达,不写文字。
   heart:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
@@ -268,7 +337,11 @@ function iconSpan(key, size, filled) {
   return s;
 }
 
-const APP_NAME = "Repos";     // 站名占位
+// 站名。天文台是"观星的地方",而你的核心动作就是 star —— 比喻是顺的。
+// 而且这个词**完全不含 "star"**,绕开了 GitHub 语境里的一个坑:
+// 那边 "stargazer" 字面意思是"给你 star 的人",拿它当工具名意思正好反了
+// (当初查名字时就是这么否决掉 stargazer 的,见 DEVLOG)。
+const APP_NAME = "Observatory";
 
 const listEl = document.getElementById("list");
 const statusEl = document.getElementById("status");
@@ -278,6 +351,7 @@ const toolbarEl = document.getElementById("toolbar");
 const railEl = document.getElementById("rail");
 const titleEl = document.getElementById("pagetitle");
 const pageBackEl = document.getElementById("pageback");
+const tokenWarnEl = document.getElementById("tokenwarn");
 
 // 页头的返回按钮(只在详情页出现,在标题左边)
 pageBackEl.appendChild(iconSpan("arrowLeft", 22));
@@ -302,11 +376,45 @@ const state = {
   returnHash: "#/trending",   // 点进标签之前在哪,清空标签后回哪儿去。存**完整 hash**,见 toggleTag()
   followQ: "",              // 已关注页的搜索词(只搜已关注的人)
   followSort: "name",       // name | recent | oldest
+  tagQ: "",                 // 标签页的搜索词(只搜**标签名**,不是搜仓库)
+  searchSort: "relevance",  // 搜索页排序:relevance | stars | name | pushed
+  starredView: "list",      // 已收藏页:list(仓库卡片) | status(它们现在怎么样了)
+  starredSort: "growth",    // status 视图的排序:growth | stale | recent | stars
+  // ---- 兔子洞(分站)----
+  // 这几个都从 URL 读,和主站的标签/搜索一个道理:URL 是唯一事实来源,
+  // 这样浏览器前进后退能用,分享出去的链接也对得上。
+  acgSub: "list",           // list | tags
+  acgSort: "stars",
+  acgQ: "",                 // 洞里的搜索词
+  acgTags: [],              // 洞里选中的标签(之间是「与」)
+  acgOffset: 0,             // 下面两个给"下滑加载更多"用
+  acgHasMore: true,
 };
+
+// 二次元分站的皮肤开关。进 /acg 换上,回主站脱掉。
+//
+// 为什么存在模块变量里而不是 state 里:详情页要**保持**它 ——
+// 从分站点进一个仓库,不该突然换回主站的配色。而 state.tab 那时是 "detail",
+// 光看它区分不出"从哪儿进来的"。
+let acgZone = false;
+
+function syncZone(tab) {
+  const was = acgZone;
+  if (tab === "acg") acgZone = true;
+  else if (tab !== "detail") acgZone = false;   // 详情页不改变分区
+  document.body.classList.toggle("acg", acgZone);
+  // 进/出分站时**整套竖栏换掉** —— 它是"另一个地方",导航当然不一样。
+  // 只在真的切换时才重建:每次 loadList 都重建会把悬停状态和动画打断。
+  if (was !== acgZone) buildRail();
+}
 const PAGE = 30;
 const SORTS = ["trending", "stars", "pushed", "name"];
 const RECOMMEND_SORTS = ["similarity", "stars", "name"];
-const TABS = ["trending", "recommend", "tags", "starred", "search", "following"];
+// 搜索结果的排序。relevance = 相关度:
+//   本地库是"命中位置分级"(名字 > 描述 > 标签 > README),
+//   全站是 GitHub 自己给的顺序。两者都叫"相关度",因为对用户来说是一回事。
+const SEARCH_SORTS = ["relevance", "stars", "name", "pushed"];
+const TABS = ["trending", "recommend", "tags", "starred", "search", "following", "acg"];
 const sortsFor = (tab) => (tab === "recommend" ? RECOMMEND_SORTS : SORTS);
 
 const NAV = [
@@ -317,6 +425,9 @@ const NAV = [
   ["starred", "tab_starred", "star"],
   ["following", "tab_following", "user"],
 ];
+// 分站入口**不放在这儿** —— 它单独挂在竖栏最下面(刷新上面那一格),
+// 中间隔着一段留白。见 buildRail()。
+// 位置本身就是一句说明:"它和上面那六个不是一类东西"。
 
 function h(tag, className, text) {
   const node = document.createElement(tag);
@@ -332,10 +443,22 @@ function nfmt(n) {
 
 const ownerOf = (fullName) => (fullName || "").split("/")[0];
 
-function avatarImg(owner, size) {
+// 头像一律走**我们自己的** /api/avatar,不要直连 github.com。
+//
+// 直连是这次查性能查出来的最大瓶颈:
+//   · github.com 是**另一个域名** —— 浏览器要重新 DNS / TCP / TLS,而且都得走代理;
+//   · github.com/<用户>.png 还会 **302 跳**到 avatars.githubusercontent.com,
+//     等于每次两轮往返;
+//   · 一页 30 张卡 = 60 次跨域往返。实测**单个头像 20 秒都拿不到**(直接超时),
+//     而服务端出一个列表只要 0.01 秒 —— 页面的时间几乎全耗在等头像上。
+//
+// 走自己的域名之后:复用页面已经建好的连接、没有跳转链,而且服务端抓过一次就落盘,
+// 之后是本地读文件。size 参数不再往 URL 上带(服务端统一缓存 80px 那份,
+// 各种显示尺寸都够用)—— 带着它反而会把缓存拆成好几份。
+function avatarImg(owner, size) {          // eslint-disable-line no-unused-vars
   const img = document.createElement("img");
   img.className = "avatar";
-  img.src = "https://github.com/" + encodeURIComponent(owner) + ".png?size=" + size;
+  img.src = "/api/avatar/" + encodeURIComponent(owner);
   img.alt = owner;
   img.loading = "lazy";
   img.referrerPolicy = "no-referrer";
@@ -456,6 +579,26 @@ function route() {
     return;
   }
 
+  // #/acg 或 #/acg/tags —— 兔子洞(分站)
+  // ⚠️ 必须排在下面那行 `TABS.includes(head)` **前面**:先把 acg 拦下来,
+  // 顺便把子页(parts[1])和筛选条件(q/tag/sort)解析掉。
+  // 靠 TABS 那套是不行的 —— 它只认一个扁平的表,分不出 `acg/tags`。
+  if (head === "acg") {
+    state.tab = "acg";
+    state.acgSub = parts[1] === "tags" ? "tags" : "list";
+    state.acgTags = (qs.get("tag") || "").split(",").map(safeDecode).filter(Boolean);
+    state.acgQ = qs.get("q") || "";
+    // 有搜索词时默认按**相关度**排 —— 按星数排的话,搜出来的前几名会是
+    // "最火但只是顺带提过这个词"的仓库(这个坑在主站搜索那边踩过)。
+    state.acgSort = qs.get("sort") || (state.acgQ ? "relevance" : "stars");
+    state.tags = [];                  // 别把主站的标签筛选带进来
+    state.offset = 0;
+    syncZone("acg");                  // 先切分区(会重建竖栏),再标高亮
+    setActiveTab(state.acgSub === "tags" ? "acg-tags" : "acg");
+    loadList();
+    return;
+  }
+
   state.tags = [];
   state.tab = TABS.includes(head) ? head : "recommend";
   fixSortFor(state.tab);
@@ -467,6 +610,9 @@ function route() {
 
   // 推荐页改成"滚到底自动加载"了,没有"第几批"这个概念 —— 每次进来都从头看
   state.offset = 0;
+  // ⚠️ syncZone 必须在 setActiveTab **之前** —— 它会重建整条竖栏,
+  // 顺序反了的话,刚刚标好的高亮会被新竖栏冲掉(页面看着像没选中任何一项)。
+  syncZone(state.tab);
   setActiveTab(state.tab);
   loadList();
 }
@@ -478,7 +624,20 @@ function railButton(iconKey, label, onClick, tab) {
   const b = h("button", "rail-btn");
   if (tab) b.dataset.tab = tab;
   const ico = h("span", "ico");
-  ico.innerHTML = ICONS[iconKey];      // 常量 SVG,没有外部输入
+  if (iconKey.charAt(0) === "/") {
+    // 以 / 开头 = 图片路径,不是 ICONS 里的键。
+    //
+    // 为什么这里用图片而不是线条图标:线条图标里画一个"一眼认得出的少女"
+    // 试了四版都不行(渲染出来依次像幽灵 / 外星人 / 披斗篷的人 / 熊脸)——
+    // 28px 里画人本来就是个硬骨头。既然手上有张明确无误的图,就别跟 SVG 较劲了。
+    const im = document.createElement("img");
+    im.src = iconKey;
+    im.alt = "";
+    im.className = "rail-img";
+    ico.appendChild(im);
+  } else {
+    ico.innerHTML = ICONS[iconKey];    // 常量 SVG,没有外部输入
+  }
   b.appendChild(ico);
   b.appendChild(h("span", "rail-label", label));
   b.title = label;
@@ -492,17 +651,55 @@ function buildRail() {
   const brand = h("button", "rail-brand");
   brand.title = APP_NAME;
   const bico = h("span", "ico");
-  bico.innerHTML = ICONS.brand;
+  if (acgZone) {
+    // 进了洞,站标也换成洞自己的 —— 从"天文台"变成这个角色本身。
+    // 这是"另一个站"最直接的信号:连左上角的标都换了。
+    const im = document.createElement("img");
+    im.src = "/rabbit_hole_icon.png";
+    im.alt = "";
+    im.className = "brand-img";
+    bico.appendChild(im);
+  } else {
+    // 主站站标:icons8 那张天文台。
+    // ⚠️ 它是**黑线 + 透明底**的 PNG,而站点默认是深色主题 ——
+    // 黑图标贴在近黑背景上等于看不见。CSS 里靠 .brand-obs 在深色下反转成白
+    // (只反转这一张:兔子洞那张是彩色插画,反转就毁了)。
+    const im = document.createElement("img");
+    im.src = "/icons8-observatory-100.png";
+    im.alt = "";
+    im.className = "brand-img brand-obs";
+    bico.appendChild(im);
+  }
   brand.appendChild(bico);
   brand.appendChild(h("span", "rail-label", APP_NAME));
   brand.onclick = () => navigate("#/recommend");
   railEl.appendChild(brand);
 
-  NAV.forEach(([tab, labelKey, iconKey]) => {
-    railEl.appendChild(railButton(iconKey, t(labelKey), () => navigate("#/" + tab), tab));
-  });
+  if (acgZone) {
+    // ---- 兔子洞的导航 ----
+    // 第一项是**回主站**。放第一项是有意的:进来之后,"出去"是这个站里
+    // 最基本的一个动作 —— 只靠浏览器后退键的话,很多人根本想不到。
+    // (最后那个参数传 null:它不是一个"当前页",不该有高亮态。)
+    railEl.appendChild(railButton("arrowLeft", t("acg_back"),
+                                  () => navigate("#/recommend"), null));
+    railEl.appendChild(railButton("/rabbit_head.png", t("tab_acg"),
+                                  () => navigate("#/acg"), "acg"));
+    railEl.appendChild(railButton("tag", t("acg_tags"),
+                                  () => navigate("#/acg/tags"), "acg-tags"));
+  } else {
+    NAV.forEach(([tab, labelKey, iconKey]) => {
+      railEl.appendChild(railButton(iconKey, t(labelKey), () => navigate("#/" + tab), tab));
+    });
+  }
 
   railEl.appendChild(h("div", "rail-spacer"));
+
+  // 分站入口只在**主站**显示。已经在洞里的时候它没有意义 ——
+  // 上面那个"兔子洞"就是它,再挂一个会出现两个一模一样的按钮。
+  if (!acgZone) {
+    railEl.appendChild(railButton("/rabbit_head.png", t("tab_acg"),
+                                  () => navigate("#/acg"), "acg"));
+  }
 
   // 底部这个"刷新"就是单纯重新拉一次当前页面,不动批次
   railEl.appendChild(railButton("refresh", t("refresh"), () => loadList()));
@@ -513,6 +710,7 @@ function buildRail() {
     localStorage.setItem("ui_lang", lang);
     buildRail();
     renderNavMenu();
+    renderTokenWarning();     // 提示条也要跟着换语言 —— 不然它会是页面上唯一没变的
     route();
   }));
 
@@ -601,6 +799,7 @@ function postActions(r, node, opts = {}) {
       note.textContent = t("starred_ok");
     } catch (err) {
       note.textContent = err.message;      // 比如 token 没权限,把原话显示出来
+      refreshTokenWarning();               // 万一是授权失效,让顶部提示条立刻出现
     } finally {
       st.disabled = false;
     }
@@ -823,6 +1022,14 @@ function repoPost(r, opts = {}) {
     const liked = r.because_kind === "interested";
     reasonText = (liked ? "♥ " : "★ ") + r.because_of;
     reasonTitle = (liked ? t("because_liked") : t("because_starred")) + r.because_of;
+  } else if (r.because_kind === "explore") {
+    // 探索位:它**本来就不像**你 star 过的东西,所以没有"因为你…"可写。
+    // 硬编一个理由是骗人 —— 这里老实说"换换口味",
+    // 顺便在 title 里把"凭什么推它"(多少人在用 / 最近涨了多少)交代清楚。
+    reasonText = "✨ " + t("reason_explore");
+    reasonTitle = r.delta
+      ? t("reason_explore_growth", nfmt(r.delta))
+      : t("reason_explore_plain");
   }
   if (opts.feedback) {
     body.appendChild(postActions(r, node, { reasonText, reasonTitle, topRight: true }));
@@ -849,7 +1056,7 @@ function renderToolbar() {
   if (state.tab === "following") {
     const input = document.createElement("input");
     input.type = "search";
-    input.className = "follow-search";
+    input.className = "toolbar-search";
     input.placeholder = t("follow_search");
     input.value = state.followQ;
     input.onkeydown = (e) => {
@@ -864,6 +1071,74 @@ function renderToolbar() {
       (v) => { state.followSort = v; loadList(); }));
   }
 
+  // 标签页:搜索框(只搜**标签名**,不是搜仓库)
+  //
+  // 用 Enter 触发而不是"边打边筛":和已关注页那个搜索框保持一致 ——
+  // 同一个站里两个搜索框行为不同,比哪个方案本身更让人困惑。
+  // 后端按标签名筛(见 /api/tags 的 q 参数),不是把标签拉回来在前端滤。
+  if (state.tab === "tags") {
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "toolbar-search";
+    input.placeholder = t("tag_search");
+    input.value = state.tagQ;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") { state.tagQ = input.value.trim(); loadList(); }
+    };
+    toolbarEl.appendChild(input);
+  }
+
+  // 已收藏页:两种看法。默认是"列表"(和别处一样的卡片),
+  // 切到"现状"就换个角度 —— 同一批仓库,看的是它们**现在**怎么样
+  // (还在更新吗、还在涨吗),而不是它们长什么样。
+  if (state.tab === "starred") {
+    toolbarEl.appendChild(makeSelect(
+      [["list", t("starred_view_list")], ["status", t("starred_view_status")]],
+      state.starredView,
+      (v) => { state.starredView = v; loadList(); }));
+    if (state.starredView === "status") {
+      toolbarEl.appendChild(makeSelect(
+        [["growth", t("status_sort_growth")],
+         ["stale", t("status_sort_stale")],
+         ["recent", t("status_sort_recent")],
+         ["stars", t("status_sort_stars")]],
+        state.starredSort,
+        (v) => { state.starredSort = v; loadList(); }));
+    }
+  }
+
+  // 兔子洞的工具栏:搜索 + 排序 + 已选标签。
+  // 只在列表子页出现 —— 标签云页上没有"搜索/排序"这回事。
+  if (state.tab === "acg" && state.acgSub === "list") {
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "toolbar-search";
+    input.placeholder = t("acg_search");
+    input.value = state.acgQ;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") navigate(acgHash({ q: input.value.trim() }));
+    };
+    toolbarEl.appendChild(input);
+
+    // "相关度"只在**有搜索词**时才出现在选项里 ——
+    // 没搜索词时没有"相关不相关"可言(那个排序靠 SQL 里的 rank 列,压根不存在)。
+    const sortOpts = [["stars", t("sort_stars")], ["pushed", t("sort_pushed")],
+                      ["name", t("sort_name")], ["added", t("sort_added")]];
+    if (state.acgQ) sortOpts.unshift(["relevance", t("sort_relevance")]);
+
+    toolbarEl.appendChild(makeSelect(sortOpts, state.acgSort,
+                                     (v) => navigate(acgHash({ sort: v }))));
+
+    // 已选标签:只列标签本身、点一下移除(和主站那套一致)
+    state.acgTags.forEach(tag => {
+      const chip = h("span", "chip on", tag);
+      chip.title = t("tag_remove");
+      chip.onclick = () => navigate(
+        acgHash({ tag: state.acgTags.filter(x => x !== tag) }));
+      toolbarEl.appendChild(chip);
+    });
+  }
+
   state.tags.forEach(tag => {
     const chip = h("span", "chip on", tag);
     chip.title = t("tag_remove");
@@ -875,9 +1150,22 @@ function renderToolbar() {
 // ---- 标签云 ----
 function renderTagCloud(d) {
   listEl.replaceChildren();
+  statusEl.textContent = "";
+
+  if (!d.items.length) {
+    // 搜不到 vs 库里本来就没标签,是两回事 —— 提示得分开
+    statusEl.textContent = d.q ? t("tag_no_match") : t("no_data");
+    return;
+  }
+
   const wrap = h("div");
+  // 搜索时标题说"匹配了多少个";没搜时说的是覆盖率。
+  // 两个数说的**不是同一件事**(一个是筛选结果数,一个是全库覆盖),
+  // 混在一起会让人以为搜了一下覆盖率就变了。
   wrap.appendChild(h("div", "section-title",
-    t("tagcloud_title", d.count, d.tagged_repos, d.total_repos)));
+    d.q ? t("tag_search_hit", d.q, d.count)
+        : t("tagcloud_title", d.count, d.tagged_repos, d.total_repos)));
+
   const cloud = h("div", "topics");
   cloud.style.marginTop = "0";
   d.items.forEach(item => {
@@ -888,7 +1176,168 @@ function renderTagCloud(d) {
   });
   wrap.appendChild(cloud);
   listEl.appendChild(wrap);
-  statusEl.textContent = "";
+}
+
+// ---- 二次元分站 ----
+// 只收某个主题的仓库。名单由 fetch_acg.py 按关键词搜出来,存在 acg_repos 表。
+//
+// "小分站"的意思就是**功能少**:一个列表 + 一个排序,点进去用同一个详情页。
+// 不做推荐、不做标签筛选、不做搜索 —— 那些等真用起来、发现缺了再加,
+// 一上来全铺开反而看不出哪部分有用。
+// 把洞里的筛选条件拼成 hash。**所有筛选都走 URL** ——
+// 和主站一个道理:URL 是唯一事实来源,前进后退能用,链接也分享得出去。
+function acgHash({ q = state.acgQ, tag = state.acgTags,
+                   sort = state.acgSort } = {}) {
+  const p = new URLSearchParams();
+  if (q) p.set("q", q);
+  if (tag && tag.length) p.set("tag", tag.join(","));
+  if (sort && sort !== "stars") p.set("sort", sort);   // 默认值不往 URL 里塞
+  const s = p.toString();
+  return "#/acg" + (s ? "?" + s : "");
+}
+
+// 洞里的列表 URL。带 offset 是为了"下滑加载更多"。
+function acgQuery(offset) {
+  const p = new URLSearchParams({ sort: state.acgSort, limit: PAGE, offset });
+  if (state.acgQ) p.set("q", state.acgQ);
+  state.acgTags.forEach(x => p.append("tag", x));
+  return "/api/acg?" + p.toString();
+}
+
+async function renderAcg() {
+  const d = await getJSON(acgQuery(0));
+  listEl.replaceChildren();
+
+  if (!d.items.length) {
+    // 搜不到 和 名单本来是空的,是两回事 —— 提示要分开
+    statusEl.textContent = (state.acgQ || state.acgTags.length)
+      ? t("acg_no_match") : t("no_data");
+    return;
+  }
+
+  // matched = 当前筛选条件下有多少条。显示它而不是名单总数,
+  // 不然筛完还挂着 4608,用户会以为筛选没生效。
+  statusEl.textContent = t("acg_summary", d.matched);
+
+  state.acgOffset = d.count;
+  state.acgHasMore = d.count < d.matched;
+
+  // feedback: true —— 那行图标(心 / 评论数 / 星 / 更多)**全是由 postActions 渲染的**,
+  // 关掉它整行都没了,不只是"少个心"。
+  d.items.forEach(r => listEl.appendChild(repoPost(r, { feedback: true })));
+  appendMoreSentinel(state.acgHasMore);
+}
+
+// 滚到底自动加载下一批。逻辑和推荐页那套一样,区别只是查询参数不同。
+async function loadMoreAcg() {
+  if (loadingMore || !state.acgHasMore || state.tab !== "acg"
+      || state.acgSub !== "list" || !moreSentinel) return;
+  loadingMore = true;
+  const sentinel = moreSentinel;              // 抓住这一刻的哨兵,后面要验它还在不在
+  const offset = state.acgOffset;
+  sentinel.textContent = t("loading");
+  try {
+    const d = await getJSON(acgQuery(offset));
+    // await 之后世界可能已经变了(切页/改筛选/按了后退)——
+    // 三个都要查,理由和推荐页那边一样
+    if (state.tab !== "acg" || state.acgSub !== "list"
+        || moreSentinel !== sentinel || !sentinel.isConnected) return;
+
+    state.acgOffset = offset + d.count;
+    state.acgHasMore = offset + d.count < d.matched;
+    d.items.forEach(r =>
+      listEl.insertBefore(repoPost(r, { feedback: true }), sentinel));
+    sentinel.textContent = state.acgHasMore ? "" : t("list_end");
+  } catch (e) {
+    if (!needLogin(e)) statusEl.textContent = t("error") + e.message;
+  } finally {
+    loadingMore = false;
+  }
+}
+
+// 洞里的标签云。点一个标签 → 回到列表并只看带它的 —— 不另开筛选页,
+// 分站就这么点东西,多一层页面反而绕。
+async function renderAcgTags() {
+  const d = await getJSON("/api/acg/tags?limit=300");
+  listEl.replaceChildren();
+
+  if (!d.items.length) {
+    statusEl.textContent = t("no_data");
+    return;
+  }
+  statusEl.textContent = t("acg_tag_title", d.count);
+
+  const wrap = h("div");
+  const cloud = h("div", "topics");
+  cloud.style.marginTop = "0";
+  d.items.forEach(item => {
+    const chip = h("span", "topic clickable", `${item.tag} ${item.n}`);
+    chip.title = t("tag_add");
+    chip.onclick = () => navigate(acgHash({ tag: [item.tag] }));
+    cloud.appendChild(chip);
+  });
+  wrap.appendChild(cloud);
+  listEl.appendChild(wrap);
+}
+
+// ---- 已收藏:现状 ----
+// 同一批 star 过的仓库,换个角度看:**它们现在怎么样了**。
+async function renderStarredStatus() {
+  const d = await getJSON("/api/me/starred/status?sort=" + state.starredSort);
+  listEl.replaceChildren();
+
+  if (!d.items.length) {
+    statusEl.textContent = t("no_data");
+    return;
+  }
+
+  const hc = d.health_counts || {};
+  statusEl.textContent = t("status_summary", d.count,
+    hc.active || 0, hc.slowing || 0, hc.stale || 0);
+
+  // 把"这个 +N 是什么"说清楚。不说的话,很自然会有人理解成
+  // "从 star 到现在涨了多少" —— 而那个数我们**根本没有**。
+  listEl.appendChild(h("div", "status-note muted", t("status_note")));
+
+  const wrap = h("div", "status-list");
+  d.items.forEach(x => {
+    const row = h("a", "status-row");
+    row.href = "#/repo/" + x.full_name;
+    row.onclick = (e) => {
+      e.preventDefault();
+      navigate("#/repo/" + x.full_name);
+    };
+
+    // 左边一个颜色点表示"还活着吗" —— 不写文字,扫一眼就知道整体。
+    // 但光有颜色,谁知道绿黄红各是什么意思?所以挂个 title 说明。
+    const dot = h("span", "health-dot " + x.health);
+    dot.title = t("health_" + x.health);
+    row.appendChild(dot);
+
+    const main = h("div", "status-main");
+    main.appendChild(h("div", "name", x.full_name));
+    main.appendChild(h("div", "status-sub",
+      (x.language ? x.language + " · " : "") + "★" + nfmt(x.stargazers_count)));
+    row.appendChild(main);
+
+    const right = h("div", "status-right");
+    if (x.delta === null || x.delta === undefined) {
+      // 没数据就说没数据,别显示成 0 —— "涨了 0" 和 "不知道" 是两回事
+      right.appendChild(h("div", "status-delta muted", t("status_delta_none")));
+    } else {
+      right.appendChild(h("div", "status-delta" + (x.delta > 0 ? " up" : ""),
+        (x.delta > 0 ? "+" : "") + x.delta));
+    }
+    right.appendChild(h("div", "status-when muted",
+      x.days_since_push === null || x.days_since_push === undefined
+        ? t("health_unknown")
+        : x.days_since_push === 0 ? t("days_today")
+        : t("days_ago", x.days_since_push)));
+    row.appendChild(right);
+
+    wrap.appendChild(row);
+  });
+  listEl.appendChild(wrap);
 }
 
 // ---- 搜索页 ----
@@ -917,6 +1366,17 @@ function searchBar() {
 
   bar.appendChild(input);
   bar.appendChild(scope);
+
+  // 排序只在**有搜索词**的时候出现。
+  // 搜索词为空时下面展示的是"发现"页(热门标签 / 上升最快 / 你 star 过的作者),
+  // 那里没有"搜索结果"可排 —— 摆一个用不上的控件只会让人以为它坏了。
+  if (state.q) {
+    bar.appendChild(makeSelect(
+      SEARCH_SORTS.map(v => [v, t("sort_" + v)]),
+      state.searchSort,
+      (v) => { state.searchSort = v; loadList(); }));
+  }
+
   bar.appendChild(go);
   return bar;
 }
@@ -971,18 +1431,10 @@ async function renderFollowing() {
     row.target = "_blank";
     row.rel = "noopener noreferrer";
 
-    if (u.avatar_url) {
-      const img = document.createElement("img");
-      img.className = "avatar";
-      img.src = u.avatar_url;
-      img.alt = u.login;
-      img.loading = "lazy";
-      img.referrerPolicy = "no-referrer";
-      img.onerror = () => { img.removeAttribute("src"); };
-      row.appendChild(img);
-    } else {
-      row.appendChild(avatarImg(u.login, 88));
-    }
+    // 一律走 avatarImg(→ /api/avatar),不用库里存的 avatar_url。
+    // 那个 URL 指向 avatars.githubusercontent.com —— 又一个独立域名,
+    // 一样要重新握手,而且绕不过代理。理由详见 avatarImg 上面的注释。
+    row.appendChild(avatarImg(u.login, 88));
 
     const info = h("div", "follow-info");
     info.appendChild(h("div", "follow-login", u.login));
@@ -1235,8 +1687,13 @@ function renderDetail(d) {
       a.href = "#/repo/" + x.full_name;
       a.onclick = (e) => { e.preventDefault(); navigate("#/repo/" + x.full_name); };
       r2.appendChild(a);
+      // 相似度可能没有(比如探索位就不带这个字段)。
+      // 直接 .toFixed() 的话,哪天后端少给一个字段,整个详情页就白了 ——
+      // 而且是 TypeError,不是"少显示一行"。缺了就少显示一段,别让页面挂掉。
+      const sim = (x.similarity === undefined || x.similarity === null)
+        ? "" : ` · ${x.similarity.toFixed(3)}`;
       r2.appendChild(h("span", "muted",
-        `  ${x.language || "?"} · ★${nfmt(x.stargazers_count)} · ${x.similarity.toFixed(3)}`));
+        `  ${x.language || "?"} · ★${nfmt(x.stargazers_count)}${sim}`));
       s.appendChild(r2);
     });
     detailEl.appendChild(s);
@@ -1292,9 +1749,11 @@ function render(items, opts) {
 let loadingMore = false;
 let moreSentinel = null;
 
-function appendMoreSentinel() {
+// 列表末尾那个"哨兵"。滚动监听到它快进视野了就再拉一批。
+// hasMore 由调用方给 —— 推荐页和兔子洞各有各的"还有没有更多"。
+function appendMoreSentinel(hasMore) {
   moreSentinel = h("div", "more-sentinel muted",
-                   state.hasMore ? "" : t("list_end"));
+                   hasMore ? "" : t("list_end"));
   listEl.appendChild(moreSentinel);
 }
 
@@ -1344,10 +1803,16 @@ async function loadMoreRecommend() {
 
 // 离底部还有 700px 就提前开始加载 —— 等真到底了再加载,用户会看到一段空白
 window.addEventListener("scroll", () => {
-  if (state.tab !== "recommend" || !state.hasMore || loadingMore) return;
+  if (loadingMore) return;
   const nearBottom = window.innerHeight + window.scrollY >=
                      document.documentElement.scrollHeight - 700;
-  if (nearBottom) loadMoreRecommend();
+  if (!nearBottom) return;
+  // 两个页面都有"下滑加载更多",各自判断自己还有没有下一批
+  if (state.tab === "recommend" && state.hasMore) {
+    loadMoreRecommend();
+  } else if (state.tab === "acg" && state.acgSub === "list" && state.acgHasMore) {
+    loadMoreAcg();
+  }
 });
 
 async function getJSON(path) {
@@ -1372,6 +1837,43 @@ function needLogin(err) {
 
 // ---- 右上角的用户菜单 ----
 const userMenuEl = document.getElementById("usermenu");
+
+// token 失效的提示条。
+//
+// 为什么值得专门占一块地方:token 失效是**完全静默**的 ——
+// 页面照常打开、推荐照常显示(用的都是旧数据),唯一的区别是
+// "你新 star 的仓库不会再被同步进来"。不主动说,用户只会以为这站坏了,
+// 不会想到是自己需要重新登录一次。
+//
+// 状态来自 /api/me 的 user.token_ok —— 每日同步时更新(见 sync_all.py)。
+function renderTokenWarning() {
+  const bad = currentUser.logged_in && currentUser.user &&
+              currentUser.user.token_ok === false;
+  tokenWarnEl.replaceChildren();
+  if (!bad) {
+    tokenWarnEl.style.display = "none";
+    return;
+  }
+  tokenWarnEl.appendChild(h("span", "grow", t("token_bad")));
+  const a = h("a", null, t("token_bad_go"));
+  // 直接指到 /auth/login:走一遍 GitHub 授权就换了新 token,
+  // 并把 token_ok 重置回 1(见 db.upsert_user)。**不用先退出登录。**
+  a.href = "/auth/login";
+  tokenWarnEl.appendChild(a);
+  tokenWarnEl.style.display = "flex";
+}
+
+// 星标之类的操作失败后,顺手重问一次"我是谁"。
+//
+// 为什么需要:后端在发现 token 失效时会把它记进库(见 api.py 的 /api/star),
+// 但那是**服务端**的状态,页面不会自己知道。重问一次 /api/me,
+// 顶部那条提示就能立刻出现 —— 而不是等用户下次刷新页面才看到。
+async function refreshTokenWarning() {
+  const me = await getJSON("/api/me").catch(() => null);
+  if (!me) return;
+  currentUser = me;
+  renderTokenWarning();
+}
 
 async function renderUserMenu() {
   userMenuEl.replaceChildren();
@@ -1553,6 +2055,10 @@ async function loadList() {
   // 交给 route() 重走一遍:它就是"按当前 URL 重新渲染"的唯一入口。
   if (state.tab === "detail") return route();
 
+  // 分站皮肤:只有列表页会切它。详情页走的是 showDetail,不经过这里 ——
+  // 所以从分站点进仓库时,配色会一直保持,不会"进去就变回主站"。
+  syncZone(state.tab);
+
   showPageBack(false);                // 列表页不需要返回按钮
   detailEl.style.display = "none";
   detailEl.replaceChildren();
@@ -1561,7 +2067,9 @@ async function loadList() {
   listEl.replaceChildren();
   toolbarEl.replaceChildren();
   statusEl.textContent = t("loading");
-  setTitle(state.tab === "tag" ? "tab_tags" : "tab_" + state.tab);
+  setTitle(state.tab === "tag" ? "tab_tags"
+           : state.tab === "acg" ? acgSubKeyForHash()
+           : "tab_" + state.tab);
 
   try {
     const op = await getJSON("/api/opinions");
@@ -1576,7 +2084,8 @@ async function loadList() {
         return;
       }
       renderToolbar();
-      const p = new URLSearchParams({ q: state.q, limit: 60, scope: state.scope });
+      const p = new URLSearchParams({ q: state.q, limit: 60, scope: state.scope,
+                                      sort: state.searchSort });
       const d = await getJSON("/api/search?" + p.toString());
       render(d.items, {
         feedback: true,
@@ -1612,18 +2121,30 @@ async function loadList() {
       state.hasMore = d.has_more;
       listEl.replaceChildren();
       d.items.forEach(r => listEl.appendChild(repoPost(r, { feedback: true })));
-      appendMoreSentinel();
+      appendMoreSentinel(state.hasMore);
       statusEl.textContent = t("summary_recommend", d.count);
     } else if (state.tab === "tags") {
-      renderTagCloud(await getJSON("/api/tags?limit=200"));
+      // q 交给后端筛(见 /api/tags)—— 前端筛的话,落在 LIMIT 之外的冷门标签
+      // 永远搜不到,而且看不出是为什么
+      const p = new URLSearchParams({ limit: 200 });
+      if (state.tagQ) p.set("q", state.tagQ);
+      renderTagCloud(await getJSON("/api/tags?" + p.toString()));
     } else if (state.tab === "following") {
       await renderFollowing();
+    } else if (state.tab === "acg") {
+      // 洞里有两个子页。靠 state.acgSub 分,它来自 URL
+      // (路由那层已经把 `#/acg/tags` 解析成 acgSub="tags" 了)。
+      await (state.acgSub === "tags" ? renderAcgTags() : renderAcg());
     } else {
-      // 已收藏:你 star 过的仓库
-      // (原来这里顶上还挂了个"你 star 过的作者",现在拆出独立的"已关注"页了,
-      //  那栏是用 star 反推的,和真实的关注列表摆在一起会让人分不清,所以去掉)
-      const d = await getJSON("/api/me/starred?limit=200");
-      render(d.items, { feedback: false, summary: t("summary_starred", d.count) });
+      // 已收藏:你 star 过的仓库。两种看法(顶部切换):
+      //   list   卡片列表,和别处一样
+      //   status 它们"现在怎么样了" —— 还在更新吗、还在涨吗
+      if (state.starredView === "status") {
+        await renderStarredStatus();
+      } else {
+        const d = await getJSON("/api/me/starred?limit=200");
+        render(d.items, { feedback: false, summary: t("summary_starred", d.count) });
+      }
     }
   } catch (e) {
     if (!needLogin(e)) statusEl.textContent = t("error") + e.message;
@@ -1640,11 +2161,35 @@ document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
 // 原因:异步流程要等 /api/me 回来(几百毫秒),那段时间里页面会先显示
 // HTML 里的初始值,再跳成正确的标题 —— 看起来像"先 Trending,然后才变成为你推荐"。
 // 标题只依赖 URL,现在就能算出来,没必要等。
+// 兔子洞首页的标题。**它是写死的装饰文案,不走 i18n** ——
+// 它是一句"欢迎来到…"的话,不是一个界面标签,没有翻译的必要。
+// (t() 找不到 key 时会原样返回,所以它和真正的 key 能混着用 ——
+//  但看代码的人容易以为这是漏翻的,所以单独提出来放这儿。)
+//
+// 日文用「うさぎの穴へようこそ」:
+//   · 「へようこそ」是"欢迎来到"的固定说法。「にようこそ」也通,但少见。
+//   · 「うさぎ」写假名,不写汉字「兎」—— 兎 不在日本的常用汉字表里,
+//     现代日语里兔子基本都写假名;写成 兎 会显得偏书面、老气,和这边的调子不搭。
+//
+// ⚠️ 这句里一个拉丁字母都没有,所以 --font-fancy(花体)在它身上**不起作用**:
+// 那些手写体没有日文字形,浏览器会整体回退到系统日文字体。
+// 想让日文也好看得引入日文字体文件(多一次网络请求)—— 需要再说。
+const ACG_TITLE = "うさぎの穴へようこそ！";
+
+// 洞里有两个子页,标题得跟着分 —— 不然标签云页顶上写着"兔子洞",
+// 看着像没切过去。这个也是**同步**算的(标题不能等异步流程)。
+function acgSubKeyForHash() {
+  const parts = location.hash.replace(/^#\/?/, "").split("?")[0]
+    .split("/").filter(Boolean);
+  return parts[1] === "tags" ? "acg_tags" : ACG_TITLE;
+}
+
 function titleKeyForHash() {
   const head = (location.hash.replace(/^#\/?/, "").split("?")[0]
     .split("/").filter(Boolean)[0]) || "recommend";
   if (head === "repo") return null;        // 详情页标题是仓库名,那得等数据回来
   if (head === "tag") return "tab_tags";
+  if (head === "acg") return acgSubKeyForHash();   // 洞里的子页标题不一样
   return "tab_" + (TABS.includes(head) ? head : "recommend");
 }
 const _initialTitle = titleKeyForHash();
@@ -1663,5 +2208,6 @@ if (_initialTitle) titleEl.textContent = t(_initialTitle);
   // 没有 hash 就补一个,并且用 replaceState —— 别让"进入网站"本身占用一条历史记录
   if (!location.hash) history.replaceState(null, "", "#/recommend");
   renderUserMenu();
+  renderTokenWarning();     // token 失效就挂一条提示(状态来自这个 /api/me)
   route();
 })();

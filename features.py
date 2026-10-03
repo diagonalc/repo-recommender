@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 import jieba
+import numpy as np
 from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -36,6 +37,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MATRIX_PATH = os.path.join(DATA_DIR, "features.npz")
 META_PATH = os.path.join(DATA_DIR, "features_meta.json")
+MAP_PATH = os.path.join(DATA_DIR, "map.json")
+
+# 降维到二维用多少邻居、跑多久 —— t-SNE 的两个关键参数
+TSNE_PERPLEXITY = 30
+TSNE_ITERS = 600
 
 DEFAULT_LIMIT = 3000
 MIN_DF = 2          # 至少在 2 篇文档里出现过的词才要(只出现一次的多半是噪音)
@@ -99,6 +105,59 @@ def load_features():
     return matrix, meta["repo_ids"]
 
 
+def build_map(matrix, ids):
+    """把所有仓库从 14471 维压到 2 维,给"口味地图"用。
+
+    ⚠️ **目前没有接进产品**(main() 里那行调用已经注释掉了)。
+    理由见 DEVLOG 的"搁置的想法:口味地图" —— 主要是做出来之后,
+    用户觉得"看不出所以然",而不是技术上有问题。
+    留着是因为里面的实测结论(t-SNE 比 PCA 好得多)是有效的,
+    以后想换个形式重做时不用再测一遍。
+
+    产出 data/map.json:每个 repo 一个二维坐标。相似的在图上就挨着。
+
+    **为什么是 t-SNE 而不是 PCA**(实测过的,不是偏好):
+        判据是"二维图上挨着的两个点,在原始空间里是不是也真的相似" ——
+        对每个 repo 取它在图上最近的 10 个邻居,数有几个也是它真实的 10 个邻居。
+
+            随机图        0.8%
+            PCA           4.6%   ← 几乎没结构,画出来是一团好看的噪点
+            t-SNE        32.0%   ← 真的能用
+
+        PCA 是线性方法,它保留的是**全局方差最大的方向**;而这堆 TF-IDF 向量
+        方差最大的方向跟"谁和谁像"关系不大。t-SNE 专门优化"邻居关系",
+        代价是慢(20 秒)而且**只能用来画图** —— 它出的坐标没有距离意义,
+        图上的远近不能当相似度用,相似度还得回原始空间算。
+
+        (顺带:两种方法都**不按语言聚**。这是对的 ——
+         Python 的 web 框架和 JS 的 web 框架,文本上就是很像。
+         图上聚出来的是**主题**,不是语言。)
+
+    ⚠️ t-SNE 是 O(n²) 的。现在 1265 个点没问题(20 秒、内存几百 MB),
+    但候选池涨到上万个之后要换办法(先 PCA 降到 50 维再 t-SNE),
+    或者改成抽样。真到那一天再说,别提前优化。
+    """
+    from sklearn.manifold import TSNE
+
+    X = np.asarray(matrix.todense(), dtype=np.float32)
+    t0 = time.time()
+    coords = TSNE(n_components=2, random_state=0, perplexity=TSNE_PERPLEXITY,
+                  init="pca", max_iter=TSNE_ITERS).fit_transform(X)
+    print(f"  降维到二维:{X.shape[0]} 个点,耗时 {time.time() - t0:.1f} 秒")
+
+    points = [[int(rid), round(float(x), 3), round(float(y), 3)]
+              for rid, (x, y) in zip(ids, coords)]
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(MAP_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "method": "tsne",
+            "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "points": points,          # [repo_id, x, y]
+        }, f)
+    print(f"  坐标写入 {MAP_PATH}")
+    return len(points)
+
+
 def main():
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LIMIT
 
@@ -141,6 +200,12 @@ def main():
             "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }, f)
     print(f"缓存写入 {MATRIX_PATH}")
+
+    # (以前这里会顺手算一遍"口味地图"的二维坐标 —— 那个功能撤掉了,
+    #  理由见 DEVLOG 的"搁置的想法:口味地图"。
+    #  build_map() 本身留着,想复活的话把下面这行加回来就行:
+    #      build_map(matrix, ids)
+    #  但注意它要 20 秒,别在没用到的时候白跑。)
 
 
 if __name__ == "__main__":

@@ -89,6 +89,10 @@ ingress:
 # 服务活着吗?(200 = 活着)
 curl -s -o /dev/null -w "%{http_code}\n" --noproxy '*' http://127.0.0.1:18080/api/me
 
+# ★ 最该常看的一条:服务活着 + 数据新不新鲜
+#   stale_days 正常 ≤1;连着变大就是每日任务挂了,而页面完全看不出来
+curl -s --noproxy '*' http://127.0.0.1:18080/api/health
+
 # 公网通不通?
 curl -s -o /dev/null -w "%{http_code}\n" https://diagonalc.dpdns.org/
 
@@ -274,7 +278,46 @@ curl -s -o /dev/null -w "%{http_code}\n" --noproxy '*' http://127.0.0.1:18080/ap
 
 ---
 
-## 七、还没做的
+## 七、改完前端看不到新版本?(缓存这一层)
+
+**症状**:接口明明更新了,页面纹丝不动。而且服务端这边怎么看都是对的 ——
+本地和公网拉的 `app.js` 哈希一致、`curl` 也正常。
+
+**根因**:**Cloudflare 会强行改写 `.js` / `.css` 的缓存头。**
+
+| 源站发的 | Cloudflare 回给浏览器的 |
+|---|---|
+| `Cache-Control: no-cache` | `max-age=14400`(4 小时) |
+| `no-cache, max-age=0, must-revalidate` | **`max-age=14400, must-revalidate`** |
+
+**对静态扩展名,源站说了不算** —— 它会套上自己的 Browser Cache TTL 默认值。
+(想改的话在 Cloudflare 面板:缓存 → 配置 → Browser Cache TTL → 改成
+"Respect Existing Headers"。但下面这个做法不需要动面板。)
+
+**已经修好的做法:版本号绑到文件内容上。**
+
+```
+index.html 里写  <script src="app.js?v=__ASSET_V__"></script>
+api.py 运行时    __ASSET_V__ → app.js 的 sha256 前 10 位
+```
+
+内容变了 URL 就变,浏览器必定重新下载;内容没变就走缓存。
+**所以改前端不用再手动改任何版本号** —— 它现在是自动的。
+
+> HTML 不在这套缓存规则里(实测 `cf-cache-status: DYNAMIC`,不缓存),
+> 所以版本号注入在 HTML 里是有效的。这也是为什么首页要由代码渲染
+> (`api.py` 的 `index_page()`)、而不是交给 StaticFiles —— 见
+> [DEVLOG.md](DEVLOG.md) 的"第九阶段"。
+
+**如果还是看到旧版本**:
+
+1. 先试普通刷新(F5)
+2. 不行就强制刷新:`Ctrl+Shift+R`(Mac 是 `Cmd+Shift+R`)
+3. 手机上可能要在浏览器设置里清一次站点数据
+
+---
+
+## 八、还没做的
 
 1. **开机自启** —— 现在 uvicorn 和 cloudflared 都要手动拉起。电脑重启后网站就是断的。
    要做到自启有两条路:Windows 任务计划(登录时触发),或者在 WSL 里配 systemd 服务。

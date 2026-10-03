@@ -3,10 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Repo Recommender</title>
+<title>Observatory</title>
 <style>
   /* 视觉参照 Threads / X:纯黑底、窄栏内容、细线分隔、导航竖排在右侧。
      导航可以折成只剩图标(窄屏自动折),内容区跟着让位。 */
+  /* 兔子洞页首那句日文的字体:Hachi Maru Pop(手写圆体,连「！」都是个小爱心)。
+     Google Fonts 出品,开源许可(OFL),可以自己托管。
+
+     ⚠️ **这份是子集化的,不是完整字体。**
+     完整的 Hachi Maru Pop 有 **4.18 MB**(日文字库几千个字形),
+     而我们只需要标题里那 10 个字符 —— pyftsubset 之后是 **500 字节**。
+     这是引入日文字体的唯一可行方式:不子集的话,为了一句标题要拖来几兆的东西,
+     正好是之前花力气干掉的那类大文件(8.4 MB 的背景图那次)。
+
+     ⚠️ 所以**改标题文字时要重新生成这个文件** —— 字体里只含现在这几个字,
+     新加的字会掉回系统字体,看起来像"只有一部分用了新字体"。
+     生成命令:
+       pyftsubset 全量字体.ttf --text="うさぎの穴へようこそ！" \
+         --output-file=web/acg-title.woff2 --flavor=woff2 --no-hinting
+     另外它没有版本号,换了之后浏览器可能要 4 小时才更新(Cloudflare 的缓存)。 */
+  @font-face {
+    font-family: "ACG Title";
+    /* ?v=__FONT_V__ 是**内容哈希**,由 api.py 在返回 HTML 时替换。
+       加它是因为字体也和 app.js 一样会被 Cloudflare 强制缓存 4 小时 ——
+       没有版本号的话,换了字体文件浏览器里那份旧的还是照用,看起来"一点没变"。
+       (真踩过,而且当时换上去的那份还是个坏的空子集。) */
+    src: url("/acg-title.woff2?v=__FONT_V__") format("woff2");
+    font-display: swap;   /* 字体没到之前先用系统字体显示,别让标题空着 */
+  }
+
   /* 夜晚模式(默认)。白天模式在 body.light 里整组覆盖 —— 只换变量,
      不去每个规则里写两遍颜色。 */
   :root {
@@ -21,6 +46,17 @@
     --like:    #ff3040;
     --accent:  #ffffff;                    /* 主按钮 / 选中态 */
     --on-accent: #000000;                  /* 压在 accent 上的文字色 */
+    --warn:    #ffb224;                    /* 提醒(不是报错):token 失效那种 */
+    --warn-bg: rgba(255, 178, 36, 0.12);
+
+    /* 花体(手写体)。**刻意不用 Google Fonts** —— 那要多一次外部请求,
+       而且在国内经常连不上;这个站刚花力气把加载速度修好(头像那次),
+       不能在这儿又加回去。用系统自带的:Windows 有 Segoe Script / Brush Script MT,
+       Mac 有 Snell Roundhand。最后那个 cursive 是兜底,保证任何设备上都不会退成宋体。
+       (中文/日文假名这些字体里没有字形,会按字形逐个回退到系统默认 —— 这是浏览器行为,
+        所以"rabbit hole によっこそ"里拉丁部分是花体、假名是常规体,是正常的。) */
+    --font-fancy: "Segoe Script", "Brush Script MT", "Snell Roundhand",
+                  "Savoye LET", "Lucida Handwriting", cursive;
     --rail-w:  56px;      /* 收起时只露图标;鼠标移上去自动展开 */
     --radius:  999px;
     color-scheme: dark;   /* 让浏览器把原生控件(下拉列表、滚动条)也渲染成深色 */
@@ -37,8 +73,82 @@
     --like:    #f91880;
     --accent:  #0f1419;                    /* 浅底下,主色反过来用深色 */
     --on-accent: #ffffff;                  /* 所以压在它上面的字要反过来变白 */
+    /* 白底上要用更深的琥珀色才看得清 —— 同一个 #ffb224 在白色上几乎读不出来。
+       这就是"压在某个背景色上的颜色不能写死"那条教训的又一个例子。 */
+    --warn:    #9a5b00;
+    --warn-bg: rgba(255, 178, 36, 0.16);
     color-scheme: light;
   }
+
+  /* ---- 二次元分站的皮肤 ---- */
+  /* 只覆盖变量,不重写任何规则 —— 整个站的颜色都走这几个变量,
+     所以"换肤"就是换一组值。这是当初把颜色全抽成变量的回报:
+     加一个分站不需要动任何一条已有的样式。 */
+  /* 图片版的导航图标(兔子洞)。尺寸跟线条图标对齐(22px)。 */
+  .rail-img { width: 22px; height: 22px; display: block; border-radius: 50%; object-fit: cover; }
+  .rail-brand .brand-img { width: 28px; height: 28px; display: block; object-fit: contain; }
+  /* icons8 那套图标是**黑线 + 透明底**的 PNG。站点默认深色主题,
+     黑图标贴在近黑背景上等于看不见 —— 所以深色下反转成白、浅色下保持黑。
+     ⚠️ 只反转主站这一张(.brand-obs)。兔子洞的站标是彩色插画,
+     一起反转的话颜色就全毁了。 */
+  .brand-obs { filter: invert(1); }
+  body.light .brand-obs { filter: none; }
+
+  body.acg {
+    /* 背景图:先铺一层**半透明底色把图压暗**,文字才压得住。
+       直接把图铺满的话,正文和画面会糊在一起,根本读不了 ——
+       背景是气氛,不是内容。 */
+    /* 两层:上面一层半透明底色(压暗,保证正文读得清),下面才是图。
+       两层要**分别**设 size/position —— 所以都写成逗号分隔的两个值。 */
+    background-image:
+      linear-gradient(rgba(21, 10, 28, 0.87), rgba(21, 10, 28, 0.87)),
+      url("/charlotte.jpg");
+    /* ⚠️ 为什么要放大到 140%:
+       这是张 16:9 的横构图,人物在画面**中间偏右(约 45%~70%)**,
+       而内容栏也是居中的 —— 两者天然重叠,直接铺(cover)人物一定压在正文后面。
+       放大之后整张图比视口宽,再把它的**左边缘锚死在视口左边**,
+       人物就被推到右侧的空白区去了。
+       · 想让人物**再往右**:把这个数调大(140%、150%)
+       · 想让人物**往回左**:调小
+       · 第二个值 left 是锚点,一般不用动 */
+    background-size: cover, 130% auto;
+    background-position: center, left center;
+    background-repeat: no-repeat, no-repeat;
+    background-attachment: fixed, fixed;   /* 滚动时图不动,内容在它上面滑过 */
+
+    --bg:      #150a1c;                    /* 深紫黑 */
+    --text:    #f7eef5;
+    --muted:   #a98fa8;
+    --line:    rgba(255, 140, 190, 0.20);
+    --hover:   rgba(255, 140, 190, 0.09);
+    --fill:    rgba(255, 140, 190, 0.14);
+    --headbg:  rgba(21, 10, 28, 0.78);
+    --like:    #ff4d94;
+    --accent:  #ff7bac;                    /* 樱花粉 */
+    --on-accent: #2a0a18;                  /* 压在粉上的字要用深色才看得清 */
+    color-scheme: dark;
+  }
+  /* ⚠️ 两个类一起写(acg + light),权重才压得过上面单独的 body.acg
+     和 body.light。少写一个会有半个站是错的配色。 */
+  body.acg.light {
+    /* 浅色下要压得更狠一点 —— 深色图配浅色文字,不压暗的话对比度完全不够 */
+    background-image:
+      linear-gradient(rgba(255, 245, 249, 0.90), rgba(255, 245, 249, 0.90)),
+      url("/charlotte.jpg");
+
+    --bg:      #fff5f9;
+    --text:    #2b1220;
+    --muted:   #8a6b78;
+    --line:    rgba(210, 70, 130, 0.20);
+    --hover:   rgba(210, 70, 130, 0.07);
+    --fill:    rgba(210, 70, 130, 0.11);
+    --headbg:  rgba(255, 245, 249, 0.82);
+    --like:    #e0407f;
+    --accent:  #d6447f;
+    --on-accent: #ffffff;
+    color-scheme: light;
+  }
+  .acg-intro { font-size: 12.5px; line-height: 1.6; padding: 6px 0 14px; }
 
   * { box-sizing: border-box; }
   html, body { background: var(--bg); }
@@ -102,7 +212,40 @@
   }
   .rail-brand .ico { flex: 0 0 28px; width: 28px; height: 28px; }
   .rail-brand .ico svg { width: 28px; height: 28px; display: block; }
-  .rail-brand .rail-label { left: 44px; font-size: 16px; font-weight: 700; }
+  /* 站名用花体。字号从 16 降到 15:手写体比无衬线体**宽得多**,
+     而竖栏展开只有 176px(站名从 44px 开始,可用 132px)——
+     "Observatory" 用 16px 花体大概率会顶出去,15px 留点余量。 */
+  .rail-brand .rail-label {
+    left: 44px; font-size: 17px; font-weight: 700;
+    font-family: var(--font-fancy);
+  }
+
+  /* 进了兔子洞:站标(角色图)放大到 72px。
+     ⚠️ 竖栏必须跟着加宽,而且**收起状态也要宽** ——
+     竖栏是 overflow:hidden 的,56px 的收起宽度会把 72px 的图标直接裁掉一半。
+     所以这里连 --rail-w 本身一起改(它同时决定内容区往右让多少)。 */
+  body.acg { --rail-w: 96px; }
+  body.acg .rail-brand .ico { flex: 0 0 72px; width: 72px; height: 72px; }
+  body.acg .rail-brand .brand-img { width: 72px; height: 72px; }
+  /* 洞里竖栏宽得多(268px),站标也大 —— 站名跟着放大一号才配得上。
+     可用宽度 268 - 86 = 182px,19px 花体的 "Observatory" 约 130px,放得下。
+     (⚠️ 这是估算 —— 花体比常规体宽得多,顶出去了就把这个数往下调两号。) */
+  body.acg .rail-brand .rail-label { left: 86px; font-size: 19px; }
+
+  /* 花体**只用在兔子洞的页首标题**(那句 "rabbit holeによっこそ")。
+     主站的页面标题保持原样:那些标题是"为你推荐""已收藏""标签"这类中文,
+     花体套上去既不好看、也读不快 —— 花体适合当装饰,不适合当导航。
+     顺带把字号提一号、取消字距微调(那个 -0.015em 是给无衬线体调的,
+     换手写体之后反而会挤在一起)。 */
+  body.acg .headrow h1 {
+    /* 先排我们的日文子集字体,再兜底到花体(万一以后标题里混了拉丁字母)。
+       浏览器是按**字形**回退的:新字体里有的用它,没有的往下一个找。 */
+    font-family: "ACG Title", var(--font-fancy);
+    letter-spacing: normal; font-size: 23px;
+  }
+  /* 展开时也要更宽 —— 不然 72px 图标 + 站名两样挤不下。
+     选择器写成 body.acg .rail:hover(三个类 + 伪类),权重压得过原来的 .rail:hover。 */
+  body.acg .rail:hover, body.acg.rail-open .rail { width: 268px; }
 
   /* ---------- 内容区 ---------- */
   .page { margin-left: var(--rail-w); min-width: 0; }
@@ -135,6 +278,25 @@
   .status { color: var(--muted); font-size: 13px; padding: 14px 0; }
   /* 列表末尾那行(滚到底自动加载时显示"加载中"或"到底了") */
   .more-sentinel { text-align: center; padding: 22px 0; font-size: 12.5px; }
+
+  /* token 失效的提示条。
+     用琥珀色而不是红色:站点本身没坏 —— 数据都还在、页面都正常,
+     只是"新 star 不再同步进来了",需要用户去重新登录一下。
+     红色会让人以为出了故障,而他真正要做的只是点一下登录。 */
+  .tokenwarn {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 12px 0 4px; padding: 11px 14px;
+    border: 1px solid var(--warn);
+    background: var(--warn-bg);
+    border-radius: 12px;
+    font-size: 13.5px; line-height: 1.55;
+  }
+  .tokenwarn .grow { flex: 1 1 220px; }
+  .tokenwarn a {
+    color: var(--warn); font-weight: 700;
+    text-decoration: none; white-space: nowrap;
+  }
+  .tokenwarn a:hover { text-decoration: underline; }
   /* 空了就不占位。搜索页顶部本来会多出一条空行 ——
      工具栏是空的但带着 padding,状态行写着"加载中"还没被清掉。 */
   .toolbar:empty, .status:empty { display: none; }
@@ -310,7 +472,41 @@
   .follow-login { font-weight: 600; font-size: 15px; }
   .follow-name { color: var(--muted); font-size: 13px; }
   .follow-date { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .follow-search { flex: 1 1 170px; min-width: 120px; }
+
+  /* ---- 已收藏 → 现状 ---- */
+  .status-note {
+    font-size: 12.5px; line-height: 1.6; padding: 8px 0 12px;
+    white-space: normal;
+  }
+  .status-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; margin: 0 -12px; border-radius: 12px;
+    border-bottom: 1px solid var(--line);
+    text-decoration: none; color: var(--text);
+  }
+  .status-row:hover { background: var(--hover); }
+  /* 一个颜色点说清"还活着吗" —— 不写文字,扫一眼就能看出整体 */
+  .health-dot {
+    flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .health-dot.active  { background: #2ecc71; }
+  .health-dot.slowing { background: #f0b429; }
+  .health-dot.stale   { background: #e86452; }
+  .status-main { flex: 1 1 auto; min-width: 0; }
+  .status-main .name {
+    font-size: 14.5px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .status-sub { color: var(--muted); font-size: 12.5px; }
+  .status-right { text-align: right; white-space: nowrap; }
+  .status-delta { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .status-delta.up { color: #2ecc71; font-weight: 600; }
+  .status-when { font-size: 11.5px; }
+
+  /* 工具栏里的搜索框。已关注页和标签页共用 —— 原来叫 .follow-search,
+     加了标签页之后那个名字就对不上了。 */
+  .toolbar-search { flex: 1 1 170px; min-width: 120px; }
 
   /* 介绍右下角的翻译按钮 */
   .intro-wrap { position: relative; }
@@ -408,6 +604,11 @@
     </div>
   </div>
   <main>
+    <!-- token 失效的提示条(内容由 JS 按需填,空着就是 display:none)。
+         放在 main 最前面而不是页头里,是为了让它**跨页面保留**:
+         loadList / showDetail 只会清空 toolbar / list / detail,碰不到它,
+         所以切页面时提示不会消失。 -->
+    <div id="tokenwarn" class="tokenwarn" style="display:none"></div>
     <div id="toolbar" class="toolbar"></div>
     <div id="status" class="status">加载中…</div>
     <div id="detail" style="display:none"></div>
@@ -418,10 +619,15 @@
 
 <aside class="rail" id="rail"></aside>
 
-<!-- ?v=2 是用来"顶掉"浏览器里那份旧缓存的:
-     改成不同的 URL,浏览器就当它是新文件,必定重新下载。
-     服务端已经加了 no-cache,以后改代码不用再动这个数字 —— 这次是为了
-     让"已经缓存了旧版本"的浏览器(尤其手机)能拿到新版本,一次性手段。 -->
-<script src="app.js?v=2"></script>
+<!-- __ASSET_V__ 是个占位符,由 api.py 的 index_page() 在运行时替换成
+     app.js 的**内容哈希**。
+
+     为什么非得这样:浏览器对 .js 会缓存,而走 Cloudflare 时它的缓存头
+     会被强制改写(实测源站说 no-cache、max-age=0 都没用,客户端一律拿到
+     4 小时)。光靠缓存头治不了,得靠**换 URL** —— 内容一变哈希就变,
+     URL 一变浏览器就必定重新下载;内容没变 URL 也不变,照常走缓存。
+
+     所以:别把这个占位符改成写死的数字,也别手动改它 —— 它现在是自动的。 -->
+<script src="app.js?v=__ASSET_V__"></script>
 </body>
 </html>

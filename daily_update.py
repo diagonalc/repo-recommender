@@ -61,7 +61,7 @@ def collect_repos():
     for lang in LANGUAGES:
         try:
             for page in range(1, PAGES_PER_LANG + 1):
-                repos = fetch_page(lang, page)
+                repos = fetch_page(f"language:{lang}", page, label=lang)
                 if not repos:
                     print(f"  {lang} 没有更多了")
                     break

@@ -244,6 +244,34 @@ def main():
         path = m.split("?")[0]
         check(f"脚本 {m} 存在", os.path.exists(os.path.join(BASE, "web", path)))
 
+    # ---------- 6. 网页字体的子集完整性 ----------
+    # 兔子洞标题用的是**子集化的**日文字体(全量 4.18 MB,裁到 2 KB)。
+    # 这里防的是:**子集生成失败时,文件同样是"很小"的** ——
+    # 只检查大小会以为成功。真出过这么一次:
+    # 生成命令里用了 shell 变量、展开失败变成空字符串,
+    # 于是产出的是一个 500 字节的**空字体**(只有 1 个 .notdef 字形、连 cmap 都没有),
+    # 而当时我只看了大小就当成"缩小了 8771 倍"发出去了 —— 页面上自然毫无变化。
+    #
+    # 所以这里查的是**内容**:取 cmap(字符→字形 的映射表),
+    # 空子集的映射数是 0,正常子集至少有好几个。
+    print("\n6. 网页字体(子集里必须真的有字形)")
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        warn("没装 fonttools,跳过字体检查", "(pip install fonttools)")
+    else:
+        refs = re.findall(r'url\("(/[^"]+\.woff2?)"\)', html)
+        if not refs:
+            print("  (样式里没有引用字体文件)")
+        for ref in refs:
+            path = os.path.join(BASE, "web", os.path.basename(ref))
+            if not os.path.exists(path):
+                check(f"{ref} 存在", False)
+                continue
+            cmap = TTFont(path).getBestCmap()
+            n = len(cmap) if cmap else 0
+            check(f"{ref} 里有字形映射", n >= 2, f"({n} 个字符)")
+
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项失败:")

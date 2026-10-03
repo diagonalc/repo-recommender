@@ -1,6 +1,11 @@
-# Repos
+# Observatory
 
-**像刷Twitter一样刷 GitHub 仓库。**
+**像刷 Twitter 一样刷 GitHub 仓库。**
+
+> 名字的来历:天文台是"观星的地方",而这里的核心动作就是 star。
+> 而且这个词**完全不含 "star"** —— 绕开了 GitHub 语境里的一个坑:
+> 那边 "stargazer" 字面意思是"给你 star 的人",拿它当工具名意思正好反了。
+> (当初比较过 `stargazer` / `starfeed` / `starboard` 等,详见 DEVLOG。)
 
 记录你 star 过什么、对什么感兴趣,每天从"正在涨"的仓库里挑出对你口味的推给你。
 
@@ -16,17 +21,31 @@
 
 **推荐**
 - 「为你推荐」—— 拿你 star 过的 + 点过感兴趣的当口味信号,用 TF-IDF 找**内容相似**的仓库
+- **star 比"感兴趣"重**(1.0 : 0.5)—— star 是主动收藏,随手点一下的心意没那么重
 - 每条都写清理由(`★ 因为你 star 过 X` / `♥ 因为你点过感兴趣 X`)
+- **每 10 个位置留 1 个"换换口味"** —— 挑一个不像你、但很多人用或最近在涨的仓库。
+  只按相似度排会越推越窄,最后整页都是同一类东西的变体(信息茧房)
 - 排序可切成:相似度 / star 数 / 名称;滚到底自动加载下一批
 
 **发现**
 - 「Trending」—— 按相邻两次快照之间的 **star 增量**排的增速榜
 - 标签多选筛选(之间是「与」关系)、按语言筛
-- 搜索:**本地库**全文搜(名称 / 描述 / 标签 / README),或**全 GitHub** 实时搜
+- 「标签」页有 **标签搜索**(按标签名筛,冷门标签也搜得到)
+- 搜索:**本地库**全文搜(名称 / 描述 / 标签 / README),或**全 GitHub** 实时搜;
+  结果可**排序** —— 相关度 / star 数 / 名称 / 最近更新
 - 详情页:README 全文、star 历史曲线、相似仓库、评论区
 
 **个人**
 - 已收藏 / 已关注(GitHub OAuth 登录后从你自己的账号同步)
+- **已收藏 → 现状** —— 换个角度看你 star 过的东西:还在更新吗、还在涨吗
+
+**分站:兔子洞**
+- 一个独立的小站(`#/acg`),只收动漫 / 漫画 / VTuber / 猫娘这类仓库。
+  名字取"掉进兔子洞"的意思 —— 一逛就停不下来
+- 名单由关键词从整个 GitHub 搜出来(见 `fetch_acg.py`),**有自己的配色**
+- 竖栏第一项是「返回主站」;洞里有**列表**(搜索 / 排序 / 按标签筛)和**标签云**
+- 搜索和标签**只在这份名单里**(4608 个),不会把主站那几万个仓库捞进来
+- 详情页和主站**共用** —— 同一份数据没必要做两遍
 - 感兴趣 / 不感兴趣,点错了能改
 - 介绍和 README 都能翻译成中 / 英
 
@@ -104,20 +123,25 @@ sync_stars.py   ─┘    starred / following
 | `daily_update.py` | 每天跑一次:刷新元数据 + 记当天 star 快照 |
 | `fetch_readmes.py` | 抓 README 原文,算相似度的文本素材 |
 | `autotag.py` | 给作者没设标签的仓库自动补标签 |
-| `sync_stars.py` / `sync_following.py` | 同步某个用户的 star / 关注列表 |
+| `sync_stars.py` / `sync_following.py` | 同步**一个**用户的 star / 关注列表 |
+| `sync_all.py` | 给**所有**登录过的用户跑上面两个 —— 每日任务调的就是它 |
+| `sync_common.py` | 上面两个共用的分页取数和错误类型 |
 | `gh_search.py` | 全 GitHub 实时搜索(和本地库搜索是两回事) |
+| `fetch_acg.py` | **二次元分站**的采集:按关键词表从 GitHub 搜一批域名进 `acg_repos` |
 | `db.py` | **所有数据库操作 + 升级迁移**。别的脚本一律 import 它,不自己拼 SQL |
 | `schema.sql` | 表结构,描述"一个全新数据库该长什么样" |
-| `features.py` | TF-IDF 向量化 |
+| `features.py` | TF-IDF 向量化(内含一段暂时没接进产品的二维降维代码,见 DEVLOG 的"搁置的想法") |
 | `recommend.py` / `similar.py` | 推荐算法 / 单个仓库的相似查询 |
 | `intro.py` | 从 README 抽一段当"介绍"(启发式,不是 AI) |
 | `trending.py` | 命令行版增速榜(和网页用的是同一份 SQL) |
 | `api.py` | **FastAPI** —— 所有 HTTP 接口,顺便托管前端 |
 | `auth.py` | GitHub OAuth 登录 |
+| `ratelimit.py` | 按 IP 限流 —— 保护**共享的** GitHub / 翻译额度 |
+| `backup_db.py` | 数据库备份(每天定时跑,保留最近 14 份) |
 | `web/index.html` · `web/app.js` | 前端(原生 JS,无框架) |
 | `run_server.sh` · `run_daily.sh` | 两个入口脚本,端口和时间只写在这里 |
 | `RepoRecommenderDaily.xml` | Windows 任务计划的定义(定时采集) |
-| `tests/` | 四个检查脚本(前端 / 迁移 / 网络重试 / 接口冒烟),见下 |
+| `tests/` | 九个检查脚本,见下 |
 
 ---
 
@@ -127,14 +151,44 @@ sync_stars.py   ─┘    starred / following
 .venv/bin/python tests/check_frontend.py    # 前端:语法 + 中英文案对齐 + 死代码
 .venv/bin/python tests/test_migration.py    # 数据库迁移可重入(中断后能自愈)
 .venv/bin/python tests/test_fetch_retry.py  # 网络故障不能炸掉采集任务
+.venv/bin/python tests/test_sync_all.py     # 同步:一人失败不拖累他人 + 退出码分类
+.venv/bin/python tests/test_cookie_secure.py # cookie 的 Secure 标志算得对不对
+.venv/bin/python tests/test_recommend.py    # 推荐:分页稳定 + 探索位 + 权重真的生效
+.venv/bin/python tests/test_search_tags.py  # 标签搜索(冷门标签也搜得到)+ 搜索排序
 .venv/bin/python tests/smoke_api.py         # 每个 HTTP 端点打一遍(需要服务在跑)
+.venv/bin/python tests/check_no_leak.py     # 没有任何接口泄漏用户的 GitHub token(需要服务在跑)
 ```
 
-这四个脚本都是**为了防住已经真实发生过的事故**(丢数据、接口 500、白屏),
-不是凑数的覆盖率。改完代码至少跑一遍。
+这几个脚本都是**为了防住已经真实发生过的事故**(丢数据、接口 500、白屏、
+token 泄漏),不是凑数的覆盖率。改完代码至少跑一遍。
 
 需要解释器以外的东西:前端那个依赖 `esprima`(`pip install esprima`)——
 这台机器没有 node,用它补上"改完 JS 没法检查语法"这一关。
+
+---
+
+## 运维
+
+```bash
+curl -s https://diagonalc.dpdns.org/api/health
+# {"ok":true,"repos":1403,"snapshots":4825,"last_snapshot":"2026-10-02","stale_days":0}
+```
+
+**`stale_days` 是最值得盯的那个数** —— "最新快照距今天数"。
+正常 ≤1;连着变大就意味着**每日任务挂了**,而页面完全看不出来
+(老数据照样渲染,trending 照样出榜,只是数字不再变)。
+这个项目已经栽过一次:连着两天没跑。
+
+数据库每天自动备份一份到 `data/backups/`,保留最近 14 份:
+
+```bash
+.venv/bin/python backup_db.py --list     # 看有哪些
+.venv/bin/python backup_db.py            # 手动再备一份
+```
+
+> 备份用的是 `sqlite3` 的 `backup()` 接口,**不是 `cp`** ——
+> 库跑在 WAL 模式下,直接拷 `.db` 会得到一份缺了最新数据的备份,
+> 而且它看起来完全正常。(第一次做备份就是这么错的。)
 
 ---
 

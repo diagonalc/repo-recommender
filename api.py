@@ -7,23 +7,27 @@
 然后浏览器打开 http://127.0.0.1:8000/docs
 —— 这是 FastAPI 白送的交互式文档,每个接口都能当场点着试,不用写 curl。
 """
+import hashlib
 import heapq
 import json
 import os
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import requests
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
+                               Response)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import auth
 import db
+import ratelimit
 
 COOKIE = "repos_sid"        # 会话 cookie:登录后发,退出登录删
 # 注:OAuth 的 state 以前也放 cookie,现在改成存服务端(见 db.save_state)。
@@ -64,6 +68,111 @@ def require_user(request: Request):
     if user is None:
         raise HTTPException(status_code=401, detail="请先登录")
     return user
+
+
+def limited(name, limit, window=60):
+    """做一个"限流依赖"。
+
+    用法:
+        @app.post("/api/events")
+        def post_event(request: Request, ev: EventIn,
+                       _: None = Depends(limited("events", 60))):
+            ...
+
+    阈值定得都**很宽** —— 正常人手动点根本碰不到。它拦的不是攻击者
+    (那要靠 Cloudflare),而是"一个人手滑或脚本把公共额度用光":
+    全站搜索和抓 README 走的是共享的 GitHub token,30 次/分钟;
+    翻译走的是 MyMemory 的匿名额度。这些被别人打光之后,
+    受害者是**其他用户**,而且他们完全不知道发生了什么。
+    """
+    def dep(request: Request):
+        key = f"{name}:{ratelimit.client_ip(request)}"
+        if not ratelimit.allow(key, limit, window):
+            raise HTTPException(
+                status_code=429,
+                detail=f"操作太频繁了(每 {window} 秒最多 {limit} 次),歇一会儿再试")
+    return dep
+
+
+def github_search_limit(request: Request):
+    """只对**全站搜索**限流(scope=github)。
+
+    本地库搜索是纯 SQLite 查询,再频繁也伤不到谁,没必要管;
+    全站搜索会去打 GitHub,用的是**共享的**认证额度(30 次/分钟)。
+    一个人连点几下,其他人就都搜不了 —— 而他们不会知道是被谁连累的。
+
+    所以这里按 query 参数**有条件地**限:同一个接口,贵的那个分支才限。
+    """
+    if request.query_params.get("scope") != "github":
+        return
+    key = f"ghsearch:{ratelimit.client_ip(request)}"
+    if not ratelimit.allow(key, 20, 60):
+        raise HTTPException(
+            status_code=429,
+            detail="全站搜索太频繁了(每分钟最多 20 次)。它用的是共享的 GitHub "
+                   "额度,慢一点让其他人也能用。")
+
+
+def cookie_secure(request: Request):
+    """这个响应该不该给会话 cookie 加 Secure 标志?
+
+    Secure 的含义是"浏览器只通过 https 发送它" —— 该加。
+    但它会让**本机 http 访问**彻底拿不到 cookie(127.0.0.1:18080 是 http),
+    也就是"本地登不上",所以不能无脑加。
+
+    判断依据**不能**是 request.url.scheme:cloudflared 是直连 localhost 的,
+    本地这一跳永远是 http,从请求本身看不出用户实际走的是 https。
+    (这正是当初 redirect_uri 踩过的坑 —— 那次也是被"本地这一跳是明文"骗了。)
+
+    所以:配了 https 的公开地址 + 这个请求不是从本机来的 → 加。
+    本机调试照旧能登录。
+    """
+    if not auth.PUBLIC_BASE.startswith("https://"):
+        return False
+    host = (request.url.hostname or "").lower()
+    return host not in ("127.0.0.1", "localhost", "::1")
+
+
+@app.get("/api/health")
+def health():
+    """健康检查 —— 服务活着吗、数据库通不通、**数据新不新鲜**。
+
+    故意**不要求登录**:外部监控探针没有你的 session cookie。
+    所以这里只回答"服务本身的状态",不碰任何用户数据。
+
+    为什么还要报"数据新不新鲜":
+        这个项目已经栽过一次 —— 每日任务连着两天没跑(09-29、10-01),
+        而**页面完全看不出来**:老数据照样渲染,trending 照样出榜,
+        只是数字不再变。没有这个字段的话,只能靠人去翻日志才会发现。
+        (同样的思路在做 token 失效提示时也用了一次。)
+
+    字段:
+        ok            false = 服务或数据库有问题(同时返回 503)
+        stale_days    最新快照距今天数。正常 ≤1;连着变大就是每日任务挂了
+        warn          超过 2 天才会出现的一行提醒
+    """
+    out = {"ok": True}
+    try:
+        conn = db.get_conn()
+        snap = conn.execute(
+            "SELECT MAX(snapshot_date) FROM repo_snapshots").fetchone()[0]
+        out["repos"] = conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
+        out["snapshots"] = db.count_snapshots(conn)
+        out["last_snapshot"] = snap
+        if snap:
+            from datetime import date
+            days = (date.today() - date.fromisoformat(snap)).days
+            out["stale_days"] = days
+            # 快照存的是 UTC 日期,和本地日期最多差一天 —— 所以 2 天以内都算正常
+            if days > 2:
+                out["warn"] = f"最新快照是 {days} 天前的 —— 每日任务可能挂了"
+    except Exception as e:                  # noqa: BLE001
+        # 健康检查本身**绝不能抛 500** —— 它的职责就是"报告坏了没",
+        # 自己崩掉等于什么都没说。所有异常都收成 ok=false + 503。
+        out["ok"] = False
+        out["error"] = f"{type(e).__name__}: {e}"
+        return JSONResponse(out, status_code=503)
+    return out
 
 
 # ---------------- 登录 ----------------
@@ -121,6 +230,7 @@ def auth_callback(request: Request, code: str = None, state: str = None,
 
     resp = RedirectResponse("/")
     resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax",
+                    secure=cookie_secure(request),
                     max_age=60 * 60 * 24 * 30)   # 30 天
     return resp
 
@@ -148,6 +258,11 @@ def whoami(request: Request):
             "name": user["name"],
             "avatar_url": user["avatar_url"],
             "html_url": f"https://github.com/{user['login']}",
+            # 上一次拿他的 token 请求 GitHub 成功了没有(每日同步时更新)。
+            # 前端据此决定要不要挂一条"授权失效,去重新登录"的提示。
+            # token 失效本身是**完全静默**的:页面照开、推荐照出(用的旧数据),
+            # 只有新 star 不再进来 —— 不主动说,用户不会知道。
+            "token_ok": bool(user["token_ok"]),
         },
     }
 
@@ -283,12 +398,41 @@ def list_repos(sort: str = "stars", lang: str = None,
             "count": len(items), "items": items}
 
 
+def _sort_search_items(items, sort):
+    """给**全站搜索**的结果排在本地(就地排)。
+
+    本地搜索的排序在 SQL 里做(db.search_repos),因为要靠 LIMIT 截断 ——
+    先全查出来再在 Python 里排,等于把整库拉进内存。
+    全站搜索没有这个问题:结果本来就只有几十条,而且已经在内存里了。
+
+    每种排序都以 full_name 兜底,理由同 db.SEARCH_SORTS:
+    **ORDER BY 得落到唯一值上**,否则并列的那些顺序不定,刷新一下位置就跳。
+    """
+    if sort == "stars":
+        items.sort(key=lambda x: (-(x.get("stargazers_count") or 0),
+                                  (x.get("full_name") or "").lower()))
+    elif sort == "name":
+        items.sort(key=lambda x: (x.get("full_name") or "").lower())
+    elif sort == "pushed":
+        # pushed_at 可能为 NULL —— 用空串兜底,让它排到最后
+        items.sort(key=lambda x: (x.get("pushed_at") or "",
+                                  x.get("full_name") or ""),
+                   reverse=True)
+    return items
+
+
 @app.get("/api/search")
-def search(q: str, scope: str = "local", limit: int = 60):
+def search(request: Request, q: str, scope: str = "local", limit: int = 60,
+           sort: str = "relevance",
+           _: None = Depends(github_search_limit)):
     """搜索 repo。
 
-    scope=local   只搜本地库(名字 / 描述 / 标签 / README),按命中位置分级排序
+    scope=local   只搜本地库(名字 / 描述 / 标签 / README)
     scope=github  搜整个 GitHub,现查现用
+
+    sort=relevance(默认) 相关度:本地是"命中位置分级"(名字 > 描述 > 标签 > README),
+                        全站是 GitHub 自己给的顺序
+    sort=stars / name / pushed   另外三种
 
     全站搜索的结果会并入本地 repos 表 —— 不写进去的话,结果只能看不能用:
     点名字进不了详情页(本地库没有)、点"感兴趣"会 404。
@@ -297,6 +441,9 @@ def search(q: str, scope: str = "local", limit: int = 60):
     q = (q or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="搜索关键词不能为空")
+    if sort not in db.SEARCH_SORTS:
+        raise HTTPException(
+            status_code=422, detail=f"sort 只能是 {sorted(db.SEARCH_SORTS)}")
 
     limit = max(1, min(limit, 100))
     conn = db.get_conn()
@@ -313,32 +460,156 @@ def search(q: str, scope: str = "local", limit: int = 60):
         rows = db.rows_by_full_names(conn, [r.get("full_name") for r in raw])
         items = [row_to_repo(r) for r in rows]
 
-        # 保持 GitHub 返回的顺序(它已按 star 排好),别被数据库的返回顺序打乱
+        # 先按 GitHub 返回的顺序排(它已按 star 排好),别被数据库的返回顺序打乱
         order = {r.get("full_name"): i for i, r in enumerate(raw)}
         items.sort(key=lambda it: order.get(it["full_name"], 9999))
+        # "相关度"就用 GitHub 给的顺序;选了别的再在本地重排
+        if sort != "relevance":
+            _sort_search_items(items, sort)
 
         attach_extras(conn, items)
-        return {"q": q, "scope": "github", "count": len(items), "items": items}
+        return {"q": q, "scope": "github", "sort": sort,
+                "count": len(items), "items": items}
 
-    rows = db.search_repos(conn, q, limit)
+    rows = db.search_repos(conn, q, limit, sort)
     items = [row_to_repo(r) for r in rows]
     for it in items:
         it.pop("rank", None)          # 排序用的内部字段,不用给前端
     attach_extras(conn, items)
-    return {"q": q, "scope": "local", "count": len(items), "items": items}
+    return {"q": q, "scope": "local", "sort": sort,
+            "count": len(items), "items": items}
+
+
+AVATAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "data", "avatars")
+
+
+@app.get("/api/avatar/{login}")
+def avatar(login: str):
+    """头像代理:由我们转发 GitHub 的头像,并落盘缓存。
+
+    **为什么不能让浏览器直接去 github.com 取**(原来就是这么做的,是性能瓶颈):
+
+      1. 那是**另一个域名** —— 浏览器得重新 DNS、TCP、TLS,而且这些都要走代理;
+      2. `github.com/<用户>.png` 是 **302 跳**到 avatars.githubusercontent.com,
+         等于每次要**两轮往返**;
+      3. 一页 30 张卡就是 60 次跨域往返。实测**单个头像要 20 秒以上**(直接超时),
+         而服务端处理一个列表接口只要 0.01 秒 —— 也就是说页面几乎所有时间
+         都花在等头像上。
+
+    改成本机转发之后:
+      · **同一个域名** —— 复用页面已经建好的那条连接,不重新握手;
+      · 没有跳转链;
+      · 服务器抓过一次就存盘,之后是本地读文件(微秒级);
+      · 顺带绕开了"github.com 在墙内不稳定"这件事。
+
+    找不到头像时也缓存一个空标记 —— 不然每次翻到同一个用户都要再问一次 GitHub。
+    """
+    # GitHub 用户名只含字母数字和连字符。过滤一遍是**防路径穿越**:
+    # 这个参数直接参与拼路径,不滤的话 ../../ 就能读到仓库外的东西。
+    login = re.sub(r"[^A-Za-z0-9-]", "", login or "")
+    if not login:
+        raise HTTPException(status_code=404, detail="没有这个头像")
+
+    path = os.path.join(AVATAR_DIR, login.lower() + ".png")
+    if not os.path.exists(path):
+        os.makedirs(AVATAR_DIR, exist_ok=True)
+        try:
+            r = requests.get(f"https://github.com/{login}.png?size=80",
+                             timeout=20)
+        except requests.RequestException:
+            # 抓不到就回一个透明像素,别让页面为了一个头像卡住 ——
+            # 前端的 onerror 也会把破图换成一个灰圆
+            return _transparent_png()
+        if r.status_code != 200 or not r.content:
+            with open(path, "wb") as f:      # 空文件 = "问过了,没有"
+                pass
+        else:
+            with open(path, "wb") as f:
+                f.write(r.content)
+
+    if os.path.getsize(path) == 0:
+        return _transparent_png()
+    return Response(content=open(path, "rb").read(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+# 1×1 透明 PNG。写死在代码里,免得为了一个占位图再去读文件。
+_TRANSPARENT_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000a49444154789c6300010000050001" "0d0a2db40000000049454e44ae426082")
+
+
+def _transparent_png():
+    return Response(content=_TRANSPARENT_PNG, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/api/acg")
+def acg_list(sort: str = "stars", limit: int = 60, offset: int = 0,
+             tag: list[str] = Query(default=None), q: str = None):
+    """兔子洞的列表。
+
+    **不需要登录** —— 它是个公开的浏览页,和 /api/repos 一样。
+    也正因为如此,这里**不碰任何用户数据**(没有 user、没有 starred):
+    想往这个接口加用户相关的东西之前先想清楚,它是给所有人看的。
+
+    数据来自 acg_repos 表,由 fetch_acg.py 按关键词搜出来 ——
+    和候选池(每天采集的那批)是两回事,理由见 schema.sql 里的说明。
+
+    q / tag **都只在这份名单里筛**,不会把主站那几万个仓库捞进来。
+    这是分站和主站接口最本质的区别。
+    """
+    if sort not in db.ACG_SORTS:
+        raise HTTPException(
+            status_code=422, detail=f"sort 只能是 {sorted(db.ACG_SORTS)}")
+    limit = max(1, min(limit, 200))
+    tags = [x for x in (tag or []) if x]
+    q = (q or "").strip() or None
+
+    conn = db.get_conn()
+    rows = db.list_acg(conn, sort=sort, limit=limit, offset=max(0, offset),
+                       tags=tags, q=q)
+    items = [row_to_repo(r) for r in rows]
+    for it in items:
+        it.pop("rank", None)          # 排序用的内部字段,不用给前端
+    attach_extras(conn, items)
+    return {"sort": sort, "q": q, "tags": tags, "count": len(items),
+            # matched = 筛完之后有多少条。前端要拿它显示"共 N 个,这里 M 个"——
+            # 只给 total 的话,筛完还显示名单总数,看着像坏了
+            "matched": db.count_acg_filtered(conn, tags=tags, q=q),
+            "total": db.count_acg(conn), "items": items}
+
+
+@app.get("/api/acg/tags")
+def acg_tag_cloud(q: str = None, limit: int = 200):
+    """兔子洞的标签云 —— 只统计**名单里**的仓库。
+
+    不能直接用主站的 /api/tags:那是全库的标签云,
+    点进去会跳到"全站带这个标签的仓库",而分站里应该只看到名单里的。
+    """
+    conn = db.get_conn()
+    q = (q or "").strip() or None
+    rows = db.acg_tags(conn, limit=max(1, min(limit, 500)), q=q)
+    return {"count": len(rows), "q": q, "items": [dict(r) for r in rows]}
 
 
 @app.get("/api/tags")
-def list_tags(limit: int = 200):
+def list_tags(q: str = None, limit: int = 200):
     """所有标签 + 各自带多少个 repo。
 
     标签就是 GitHub 的 topics —— 它们是仓库作者自己选的,
     质量比我们瞎猜的关键词高得多,拿来当分类最省事。
+
+    q 按**标签名**过滤(标签页上的搜索框)。过滤在 SQL 里做,
+    这样冷门标签也搜得到 —— 详见 db.list_tags 的注释。
     """
     conn = db.get_conn()
-    rows = db.list_tags(conn, limit=max(1, min(limit, 500)))
+    q = (q or "").strip() or None
+    rows = db.list_tags(conn, limit=max(1, min(limit, 500)), q=q)
     return {
         "count": len(rows),
+        "q": q,
         "tagged_repos": db.tag_cloud_count(conn),
         "total_repos": db.count_repos(conn),
         "items": [dict(r) for r in rows],
@@ -442,7 +713,8 @@ class CommentIn(BaseModel):
 
 
 @app.post("/api/comments/{full_name:path}", status_code=201)
-def post_comment(request: Request, full_name: str, c: CommentIn):
+def post_comment(request: Request, full_name: str, c: CommentIn,
+                 _: None = Depends(limited("comment", 20))):
     """给某个 repo 写一条笔记。
 
     路径放在 /api/comments/ 而不是 /api/repos/... 下面:
@@ -469,7 +741,8 @@ def post_comment(request: Request, full_name: str, c: CommentIn):
 
 
 @app.post("/api/star/{full_name:path}")
-def star_repo(request: Request, full_name: str):
+def star_repo(request: Request, full_name: str,
+              _: None = Depends(limited("star", 30))):
     """真的去 GitHub 给这个 repo 点 star(不是本地标记)。
 
     **用登录者自己的 token** —— 多用户之后不能拿站长的 token 替所有人点星。
@@ -515,6 +788,20 @@ def star_repo(request: Request, full_name: str):
             detail=f"token 权限不足。GitHub 这个接口要求 {accepted} 权限,当前 token 没有。"
                    "去 github.com/settings/tokens 加上 public_repo —— "
                    "star 属于写操作,只读 token 读数据够用,但 star 不行")
+    if r.status_code == 401:
+        # 这个人的 GitHub 授权失效了。
+        #
+        # 注意**不能回 401**:前端的 needLogin() 把 401 理解成"你的登录会话没了",
+        # 会直接把页面切成登录页。但这里的情况是**会话好着呢,只是 GitHub 那边的
+        # 授权旧了** —— 两件不同的事,不能共用一个状态码。
+        #
+        # 顺便把状态记进库:这样页面顶部那条"去重新登录"的提示立刻就能出现,
+        # 不用等明天的定时同步才发现。
+        db.set_token_status(conn, user["id"], False)
+        raise HTTPException(
+            status_code=403,
+            detail="你的 GitHub 授权已失效(Bad credentials)。重新登录一次就能恢复,"
+                   "已有的数据都还在")
     if r.status_code == 403:
         raise HTTPException(
             status_code=403,
@@ -535,6 +822,99 @@ def my_starred(request: Request, limit: int = 200):
     items = [dict(r) for r in rows]
     attach_extras(conn, items)
     return {"count": len(items), "items": items}
+
+
+# "还活着吗"的分档。阈值是**口径**,不是事实 —— 放这儿方便调。
+# 30 天 / 一年是常见直觉:一个月内有提交算活着,一年没动基本就是弃了。
+HEALTH_ACTIVE_DAYS = 30
+HEALTH_SLOW_DAYS = 365
+
+STARRED_STATUS_SORTS = ["growth", "stale", "recent", "stars"]
+
+
+@app.get("/api/me/starred/status")
+def starred_status(request: Request, sort: str = "growth"):
+    """你 star 过的仓库**现在怎么样了**。
+
+    两个维度:
+      · **还活着吗** —— 按最后一次 push 距今多久分档(活跃 / 放缓 / 停更)
+      · **在涨吗**   —— 最近两个快照之间的 star 增量
+
+    ⚠️ 一个必须说清的限制:**我们并不知道"你 star 它的时候它多少星"。**
+       快照是 2026-09 才开始攒的,在那之前 star 的历史没有留档。
+       所以这里只能比"最近这几天涨了多少",**算不出**"从你 star 到现在涨了多少"。
+       前端也别写那种话 —— 数据支持不了,写了就是编。
+
+    排序:
+        growth  最近涨得最快(没增量数据的排最后)
+        stale   最久没更新的排前面 —— 想看"我 star 的东西都死没死"就用它
+        recent  最近 star 的排前面
+        stars   星数最多的排前面
+    """
+    user = require_user(request)
+    if sort not in STARRED_STATUS_SORTS:
+        raise HTTPException(
+            status_code=422, detail=f"sort 只能是 {STARRED_STATUS_SORTS}")
+
+    conn = db.get_conn()
+    rows = db.starred_list(conn, user["id"], limit=1000)
+
+    # 最近两个快照之间的增量。只有进了快照的仓库才有(候选池约 1200 个),
+    # 落在池子外的 star 仓库 delta 就是 None —— 前端显示成"—",不是 0。
+    dates = db.snapshot_dates(conn)
+    growth = {}
+    if len(dates) >= 2:
+        growth = {r["id"]: r["delta"] for r in db.growth_rows(conn, dates[0], dates[1])}
+
+    now = datetime.now(timezone.utc)
+    items = []
+    for r in rows:
+        days = None
+        if r["pushed_at"]:
+            try:
+                t = datetime.strptime(r["pushed_at"], "%Y-%m-%dT%H:%M:%SZ")
+                days = (now - t.replace(tzinfo=timezone.utc)).days
+            except ValueError:
+                days = None       # 时间格式不对就当不知道,别让整个接口挂掉
+
+        if days is None:
+            health = "unknown"
+        elif days <= HEALTH_ACTIVE_DAYS:
+            health = "active"
+        elif days <= HEALTH_SLOW_DAYS:
+            health = "slowing"
+        else:
+            health = "stale"
+
+        items.append({
+            "full_name": r["full_name"],
+            "language": r["language"],
+            "html_url": r["html_url"],
+            "stargazers_count": r["stargazers_count"],
+            "starred_at": r["starred_at"],
+            "pushed_at": r["pushed_at"],
+            "days_since_push": days,
+            "health": health,
+            "delta": growth.get(r["id"]),      # None = 不在快照池子里 / 库还太新
+        })
+
+    if sort == "growth":
+        items.sort(key=lambda x: (x["delta"] is None, -(x["delta"] or 0)))
+    elif sort == "stale":
+        items.sort(key=lambda x: -(x["days_since_push"] or -1))
+    elif sort == "recent":
+        items.sort(key=lambda x: x["starred_at"] or "", reverse=True)
+    else:                                      # stars
+        items.sort(key=lambda x: -(x["stargazers_count"] or 0))
+
+    counts = {}
+    for it in items:
+        counts[it["health"]] = counts.get(it["health"], 0) + 1
+
+    return {"count": len(items), "sort": sort, "health_counts": counts,
+            "since": dates[1] if len(dates) >= 2 else None,
+            "as_of": dates[0] if len(dates) >= 2 else None,
+            "items": items}
 
 
 @app.get("/api/recommend")
@@ -643,7 +1023,8 @@ def _translate_one(text, src, tgt):
 
 
 @app.get("/api/translate")
-def translate(text: str, to: str = "zh"):
+def translate(request: Request, text: str, to: str = "zh",
+              _: None = Depends(limited("translate", 20))):
     """把一段文字翻成目标语言。
 
     用的是 MyMemory 的公开接口:免费、不用申请 key(匿名有每日额度)。
@@ -674,7 +1055,8 @@ def translate(text: str, to: str = "zh"):
 
 
 @app.post("/api/events", status_code=201)
-def post_event(request: Request, ev: EventIn):
+def post_event(request: Request, ev: EventIn,
+               _: None = Depends(limited("events", 60))):
     """记一条反馈。前端点心/不感兴趣就调这里。"""
     user = require_user(request)
     if ev.action not in db.EVENT_ACTIONS:
@@ -722,21 +1104,97 @@ def my_opinions(request: Request):
 # /api/me/starred、/api/recommend 等全部 404)。
 # 好处是前后端**同一个端口、同源** —— 不用配 CORS,session cookie 也能正常带。
 class NoCacheStatic(StaticFiles):
-    """给静态文件加上 no-cache 头。
+    """给静态文件加上"每次都回来问一句"的缓存头。
 
     为什么需要:默认情况下浏览器会对静态文件做**启发式缓存**,手机浏览器尤其顽固 ——
-    改完代码刷新半天看不到新版本,很容易误判成"代码没生效"(我们已经为此浪费过好几轮时间)。
+    改完代码刷新半天看不到新版本,很容易误判成"代码没生效"。
 
-    加上 no-cache 之后,浏览器每次都会问一句"变了没":
-    文件没变就返回 304(只有几十字节),变了几毫秒就拿到新的。**既不会看到旧版本,也不会变慢。**
+    ⚠️ 光写 `no-cache` **不够**,而且写 `max-age=0` 也没用 —— 走 Cloudflare 时会被它顶掉。
+
+    实测(试过两种写法,结果一样):
+        源站发 `Cache-Control: no-cache`            → CF 回给浏览器 max-age=14400
+        源站发 `Cache-Control: no-cache, max-age=0, must-revalidate`
+                                                   → CF 回给浏览器 max-age=14400
+        (只有 `must-revalidate` 被保留了)
+
+    也就是说:**对 .js / .css 这类静态扩展名,Cloudflare 会强行套上它自己的
+    Browser Cache TTL 默认值(4 小时),源站说了不算。**
+    症状极具误导性:接口已经更新了、页面却纹丝不动,而服务端这边怎么看都是对的。
+    (有一次为此白查了半天,最后发现浏览器里那份 JS 是四个小时前的。)
+
+    真正解决问题的是**把版本号绑到文件内容上**(见下面 index_page 和
+    _app_asset_version):URL 变了,浏览器就当它是新文件。
+    这个头留着是有用的兜底 —— 直连(127.0.0.1)、或者哪天不走 Cloudflare 了,
+    它就能按原意工作。
     """
 
     async def get_response(self, path, scope):
         resp = await super().get_response(path, scope)
-        resp.headers["Cache-Control"] = "no-cache"
+        resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return resp
 
 
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+
+def _asset_version(filename):
+    """按内容算版本号(取哈希前 10 位)。
+
+    内容没变 → 哈希没变 → URL 没变 → 浏览器直接用缓存(不浪费流量)。
+    内容变了 → 哈希变了 → URL 变了 → 浏览器必定重新下载。
+    **这才是缓存该有的样子**:该省的一分不省,该新的绝不旧。
+    """
+    try:
+        with open(os.path.join(_WEB_DIR, filename), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:10]
+    except OSError:
+        return "0"
+
+
+# 需要往 HTML 里注入版本号的资源:占位符 → 文件名。
+# 再加资源就往这儿加一行,**同时**在 index.html 里用对应的占位符。
+#
+# 为什么连字体也要版本化:它和 app.js 一样会被 Cloudflare 强制缓存 4 小时
+# (见 NoCacheStatic 的说明),而没有版本号的 URL 换不了。
+# 真踩过:改完字体文件,浏览器里那份坏的还是照用,页面看起来"一点没变"。
+ASSET_TOKENS = {
+    "__ASSET_V__": "app.js",
+    "__FONT_V__": "acg-title.woff2",
+}
+
+
+@app.get("/")
+@app.get("/index.html")
+def index_page():
+    """首页 —— 每次现算 app.js 的版本号填进 HTML。
+
+    ⚠️ 为什么这里要绕开 StaticFiles、自己读文件返回:
+
+        静态文件的缓存头会被 Cloudflare 改写(见 NoCacheStatic 的说明),
+        客户端拿到的是"缓存 4 小时"。**如果 HTML 也那样被冻住,
+        里面写的版本号就一起冻住了** —— 改了代码也传不下去,
+        整个缓存失效机制等于白做。
+
+        而 **HTML 恰好不会被 Cloudflare 缓存**:它只缓存 .js/.css 这类
+        静态扩展名,首页实测是 `cf-cache-status: DYNAMIC`(不缓存边缘副本),
+        而且缓存头原样透传。
+
+        所以 HTML 是唯一能"每次都现算"的位置 —— 版本号必须在这里注入。
+
+    注:这两条路由必须注册在末尾那个 mount("/") **之前**。
+    路由按注册顺序匹配,mount 放最后才轮得到它兜底。
+    """
+    try:
+        with open(os.path.join(_WEB_DIR, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+    except OSError:
+        raise HTTPException(status_code=500, detail="web/index.html 不见了")
+    for token, filename in ASSET_TOKENS.items():
+        html = html.replace(token, _asset_version(filename))
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
+
+
 if os.path.isdir(_WEB_DIR):
     app.mount("/", NoCacheStatic(directory=_WEB_DIR, html=True), name="web")

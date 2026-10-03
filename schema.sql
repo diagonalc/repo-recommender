@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS users (
                                          -- 同步他的 star/关注、替他 star 仓库都要用。
                                          -- 注意:明文存库 —— 局域网自用可以接受,
                                          -- 真要给外人用,得先想清楚怎么加密。
+
+    -- token 还有没有用。token 会失效(用户撤销授权、改了密码、太久没用……),
+    -- 而失效之后**表面上看不出任何异常**:页面照开、推荐照出(用的旧数据),
+    -- 只有"新 star 不再被同步进来"。没有这一列的话,这件事只在日志里,
+    -- 用户只会觉得"这站坏了"。存下来才能在前端提示他去重新登录。
+    token_ok    INTEGER NOT NULL DEFAULT 1,   -- 1=上次用它能通,0=被 GitHub 拒了(401)
+    token_checked_at TEXT,                    -- 上次检查它的时间
+
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -159,6 +167,22 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_repo ON comments(repo_id);
+
+
+-- ============ 二次元分站 ============
+-- 一个"小分站":只收某个主题的仓库。数据由 fetch_acg.py 抓。
+--
+-- 为什么不直接在 repos 上加一列(比如 is_acg):
+--   同一个仓库可能既在候选池里、又在这个名单里,但它俩是**两件不同的事** ——
+--   候选池是"每天刷新的榜单",这个名单是"按关键词筛出来的集合"。
+--   而且关键词表要反复调,调一次就得重刷一遍名单;
+--   分开存的话,重刷名单永远动不到候选池。
+CREATE TABLE IF NOT EXISTS acg_repos (
+    repo_id   INTEGER PRIMARY KEY,     -- 一个仓库只记一行(幂等,重复跑不会翻倍)
+    source    TEXT,                    -- 哪条查询词找到它的 —— 调关键词表时要看这个
+    added_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (repo_id) REFERENCES repos(id)
+);
 
 
 -- ============ 你关注的开发者 ============
