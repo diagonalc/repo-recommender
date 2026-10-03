@@ -1,13 +1,14 @@
 # Observatory
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/diagonalc/repo-recommender)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-8b5cf6)](https://deepwiki.com/diagonalc/repo-recommender)
+<!-- ↑ 官方那张 https://deepwiki.com/badge.svg 目前**加载不出来**:
+     deepwiki.com 前面挡着 Vercel 的机器人风控,对非浏览器请求一律回 429 + 一个
+     "请完成验证"的页面 —— 而 <img> 跑不了 JS、过不去验证,
+     GitHub 渲染外链图片走的也是它自己的代理,一样过不去。
+     (实测:不走代理 / 装成浏览器 / 连试三次,全是 429;而 shields.io 是 200。)
+     所以改用 shields.io 的静态徽章,链接照样指向 DeepWiki 那个页面。
+     哪天官方那张能用了(比如风控松了),把上面这行换回去就行。 -->
 
-**像刷 Twitter 一样刷 GitHub 仓库。**
-
-> 名字的来历:天文台是"观星的地方",而这里的核心动作就是 star。
-> 而且这个词**完全不含 "star"** —— 绕开了 GitHub 语境里的一个坑:
-> 那边 "stargazer" 字面意思是"给你 star 的人",拿它当工具名意思正好反了。
-> (当初比较过 `stargazer` / `starfeed` / `starboard` 等,详见 DEVLOG。)
 
 记录你 star 过什么、对什么感兴趣,每天从"正在涨"的仓库里挑出对你口味的推给你。
 
@@ -42,8 +43,7 @@
 - **已收藏 → 现状** —— 换个角度看你 star 过的东西:还在更新吗、还在涨吗
 
 **分站:兔子洞**
-- 一个独立的小站(`#/acg`),只收动漫 / 漫画 / VTuber / 猫娘这类仓库。
-  名字取"掉进兔子洞"的意思 —— 一逛就停不下来
+- 一个独立的小站
 - 名单由关键词从整个 GitHub 搜出来(见 `fetch_acg.py`),**有自己的配色**
 - 竖栏第一项是「返回主站」;洞里有**列表**(搜索 / 排序 / 按标签筛)和**标签云**
 - 搜索和标签**只在这份名单里**(4608 个),不会把主站那几万个仓库捞进来
