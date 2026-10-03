@@ -271,6 +271,13 @@ def main():
         refs = re.findall(r'url\("(/[^"?]+\.woff2?)(?:\?[^"]*)?"\)', html)
         if not refs:
             print("  (样式里没有引用字体文件)")
+
+        # preload 的 URL 必须和 @font-face 里的**一字不差**。
+        # 差一点(比如一个带版本号一个不带)浏览器就当成两个资源:
+        # preload 那份白下,真用的时候还要再等第二份 —— 比不 preload 还慢。
+        full_urls = re.findall(r'url\("([^"]+\.woff2?(?:\?[^"]*)?)"\)', html)
+        for u in re.findall(r'rel="preload"[^>]+href="([^"]+)"', html):
+            check(f"preload {u} 和 @font-face 的 URL 一致", u in full_urls)
         for ref in refs:
             path = os.path.join(BASE, "web", os.path.basename(ref))
             if not os.path.exists(path):

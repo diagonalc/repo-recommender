@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Observatory</title>
+
+<!-- 兔子洞标题的字体,**必须 preload**。
+     不 preload 的话,字体要等 app.js 跑完、标题文字插进 DOM 之后才开始下载 ——
+     而 app.js 有 90 多 KB,是这个字体(不到 2 KB)的五十倍。
+     等它下载+解析完再下字体,标题就会先显示成系统字体、过一拍才变过来。
+     preload 让浏览器**解析 HTML 时**就开始下它,基本能赶在文字出现之前拿到。
+
+     ⚠️ 必须带 crossorigin —— **即使同源**。浏览器取字体走的是 CORS 模式,
+     漏了这个属性会下载两次(一次 preload、一次真正用到时),反而更慢。 -->
+<link rel="preload" as="font" type="font/woff2"
+      href="/acg-title.woff2?v=__FONT_V__" crossorigin>
 <style>
   /* 视觉参照 Threads / X:纯黑底、窄栏内容、细线分隔、导航竖排在右侧。
      导航可以折成只剩图标(窄屏自动折),内容区跟着让位。 */
@@ -248,7 +259,7 @@
        现在少一层:无衬线 → Donguriko。再加上 <head> 里的 preload,
        字体基本能在文字出现之前就绪,那一跳也就看不到了。 */
     font-family: "ACG Title";
-    letter-spacing: normal; font-size: 26px;
+    letter-spacing: normal; font-size: 30px;
   }
   /* 展开时也要更宽 —— 不然 72px 图标 + 站名两样挤不下。
      选择器写成 body.acg .rail:hover(三个类 + 伪类),权重压得过原来的 .rail:hover。 */

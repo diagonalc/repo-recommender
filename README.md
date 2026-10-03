@@ -1,5 +1,7 @@
 # Observatory
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/diagonalc/repo-recommender)
+
 **像刷 Twitter 一样刷 GitHub 仓库。**
 
 > 名字的来历:天文台是"观星的地方",而这里的核心动作就是 star。
