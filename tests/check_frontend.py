@@ -292,6 +292,24 @@ def main():
                 check(f"{ref} 覆盖标题「{title}」", not missing,
                       f"缺 {''.join(missing)} —— 要重新生成子集" if missing else "")
 
+    # ---------- 7. CSS 基本检查 ----------
+    # 这个项目改 CSS 是**盲改**(手边没有浏览器),而 CSS 出错是**完全静默的**:
+    # 少一个花括号不会有任何报错,只是从那一条开始后面的规则整段失效 ——
+    # 页面上表现为"某块样式莫名其妙没了",极难定位。
+    # 这里做最低限度但最有效的一步:查没闭合的注释 + 数花括号。
+    print("\n7. CSS 基本结构")
+    m = re.search(r"<style>(.*?)</style>", html, re.S)
+    if not m:
+        warn("index.html 里没找到 <style> 块")
+    else:
+        css = m.group(1)
+        check("注释都闭合了", css.count("/*") == css.count("*/"),
+              f"(/* {css.count('/*')} 个 vs */ {css.count('*/')} 个)")
+        stripped = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        check("花括号配平",
+              stripped.count("{") == stripped.count("}"),
+              f"({{ {stripped.count('{')} 个 vs }} {stripped.count('}')} 个)")
+
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} 项失败:")

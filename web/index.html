@@ -164,7 +164,15 @@
   .acg-intro { font-size: 12.5px; line-height: 1.6; padding: 6px 0 14px; }
 
   * { box-sizing: border-box; }
-  html, body { background: var(--bg); }
+  /* ⚠️ 只给 **body** 设背景,html 留透明。原来是 `html, body { background: var(--bg) }`,
+     那是个隐蔽的 bug:
+       --bg 是在 **body** 上被覆盖的(body.light / body.acg 都写在 body 上),
+       而 CSS 自定义属性只**向下**继承 —— html 拿到的永远是 :root 里那个**深色**值。
+       而 html 一旦有了背景,body 的背景就**不再传播到画布** ——
+       于是浅色模式下,正文盖不满的地方(内容短的页面、手机回弹)会露出一条**黑边**。
+     让 html 透明,body 的背景就会传播到整个画布,颜色也跟着主题走。 */
+  html { background: transparent; }
+  body { background: var(--bg); }
   body {
     margin: 0; min-height: 100vh;
     color: var(--text);
@@ -437,6 +445,8 @@
   .sel.more .sel-item { display: flex; align-items: center; gap: 9px; }
   .sel.more .sel-item .ico { width: 16px; height: 16px; flex: 0 0 auto; color: var(--muted); }
   .sel.more .sel-item .ico svg { width: 16px; height: 16px; display: block; }
+  /* 菜单里用图片当图标的(兔子洞)。尺寸和 .ico 对齐,不然那一行会比别的矮/高。 */
+  .sel.more .sel-item .menu-img { width: 16px; height: 16px; flex: 0 0 auto; }
 
   /* ---------- 未登录:整页只有登录界面 ---------- */
   /* 没登录时不显示导航,内容也不用给它让位。
@@ -585,6 +595,28 @@
     #navmenu { display: block; }       /* 换成标题旁边的下拉 */
     .page { margin-left: 0; }
     .login-screen { margin-top: 6vh; }
+
+    /* ---------- 兔子洞在手机上的两处适配 ---------- */
+
+    /* ① 背景:**手机上不用那张图,纯色。**
+       桌面那套是 `130% auto` + 左锚点,用途是把人物推到内容栏右边。
+       但手机是**竖屏**,又窄又长,而 `auto` 是按**宽度**推高度的:
+       375 宽的屏上 130% = 487px 宽,图高只有 487 × 9/16 ≈ 274px,
+       视口却高 667px —— 图根本盖不满。
+       让它 cover 也只是把一张 16:9 的横图硬拉进竖屏,人物会被裁得只剩一块;
+       而且 `background-attachment: fixed` 在 iOS Safari 上本来就不生效。
+       竖屏上这张图**没有一种摆法是好看的**,所以干脆不用 ——
+       纯色(跟着主题走的 --bg)反而干净。 */
+    body.acg,
+    body.acg.light {
+      background-image: none;
+    }
+
+    /* ② 标题字号。
+       那句日文在 30px 下要 330px 宽,而 375 的屏扣掉左右内边距(32)
+       和两个按钮(▾ 约 30、头像约 34)之后只剩下 263px —— 会被省略号截掉一截。
+       降到 21px 大约 230px,放得下,和主站标题也一样大。 */
+    body.acg .headrow h1 { font-size: 21px; }
   }
 
   /* ---------- 详情页的笔记 ---------- */

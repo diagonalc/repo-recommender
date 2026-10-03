@@ -111,7 +111,8 @@
 | `backup_db.py` | 数据库备份(用 sqlite3 的 backup 接口,WAL 安全) |
 | `ratelimit.py` | 按 IP 限流,保护**共享的** GitHub / 翻译额度 |
 | `RepoRecommenderDaily.xml` | Windows 任务计划的定义(定时采集) |
-| `tests/` | `test_fetch_retry.py`(回归)+ `smoke_api.py`(冒烟) |
+| `fetch_acg.py` | **兔子洞**(分站)的采集。真正的内容是里面的关键词表 |
+| `tests/` | 八个检查脚本,见 [README](README.md)。改完代码跑一遍 |
 | `README.md` | 门面:能做什么、怎么跑、文件清单 |
 | `DEVLOG.md` | 开发日志:决策与踩坑 |
 | `DEPLOY.md` | 部署运维 |

@@ -403,9 +403,17 @@ function syncZone(tab) {
   if (tab === "acg") acgZone = true;
   else if (tab !== "detail") acgZone = false;   // 详情页不改变分区
   document.body.classList.toggle("acg", acgZone);
-  // 进/出分站时**整套竖栏换掉** —— 它是"另一个地方",导航当然不一样。
+  // 进/出分站时**整套导航换掉** —— 它是"另一个地方",导航当然不一样。
   // 只在真的切换时才重建:每次 loadList 都重建会把悬停状态和动画打断。
-  if (was !== acgZone) buildRail();
+  //
+  // ⚠️ 两个都要重建。原来只调了 buildRail()(桌面的竖栏),
+  // 漏了 renderNavMenu()(手机标题旁边的 ▾ 下拉)—— 于是手机上进了洞,
+  // ▾ 里还是主站那六个,洞里的标签云根本点不到。
+  // 桌面上看不出来这个 bug,因为手机上才显示那个下拉。
+  if (was !== acgZone) {
+    buildRail();
+    renderNavMenu();
+  }
 }
 const PAGE = 30;
 const SORTS = ["trending", "stars", "pushed", "name"];
@@ -675,22 +683,10 @@ function buildRail() {
   brand.onclick = () => navigate("#/recommend");
   railEl.appendChild(brand);
 
-  if (acgZone) {
-    // ---- 兔子洞的导航 ----
-    // 第一项是**回主站**。放第一项是有意的:进来之后,"出去"是这个站里
-    // 最基本的一个动作 —— 只靠浏览器后退键的话,很多人根本想不到。
-    // (最后那个参数传 null:它不是一个"当前页",不该有高亮态。)
-    railEl.appendChild(railButton("arrowLeft", t("acg_back"),
-                                  () => navigate("#/recommend"), null));
-    railEl.appendChild(railButton("/rabbit_head.png", t("tab_acg"),
-                                  () => navigate("#/acg"), "acg"));
-    railEl.appendChild(railButton("tag", t("acg_tags"),
-                                  () => navigate("#/acg/tags"), "acg-tags"));
-  } else {
-    NAV.forEach(([tab, labelKey, iconKey]) => {
-      railEl.appendChild(railButton(iconKey, t(labelKey), () => navigate("#/" + tab), tab));
-    });
-  }
+  // 竖栏和手机的 ▾ 下拉共用**同一份** navItems() —— 理由见那个函数上面的注释。
+  navItems().forEach(({ icon, label, tab, pick }) => {
+    railEl.appendChild(railButton(icon, label, pick, tab));
+  });
 
   railEl.appendChild(h("div", "rail-spacer"));
 
@@ -1911,7 +1907,17 @@ async function renderUserMenu() {
   const menu = h("div", "sel-menu");
   const addItem = (iconKey, labelText, onClick) => {
     const item = h("div", "sel-item");
-    item.appendChild(iconSpan(iconKey, 16));
+    // iconKey 以 / 开头 = 图片路径(和 railButton 一个约定),
+    // 否则是 ICONS 里的键。兔子洞那个图标是张图,不是线条图标。
+    if (iconKey.charAt(0) === "/") {
+      const im = document.createElement("img");
+      im.src = iconKey;
+      im.alt = "";
+      im.className = "menu-img";
+      item.appendChild(im);
+    } else {
+      item.appendChild(iconSpan(iconKey, 16));
+    }
     item.appendChild(h("span", null, labelText));
     item.onclick = (e) => {
       e.stopPropagation();
@@ -1920,6 +1926,12 @@ async function renderUserMenu() {
     };
     menu.appendChild(item);
   };
+
+  // 兔子洞入口。**这个菜单在手机上是它唯一的入口** ——
+  // 竖栏在窄屏是 display:none,而兔子洞原来只挂在竖栏上,手机上根本够不着。
+  // 桌面上竖栏那个还在(位置本身在说"它是另一个地方"),这里是并存的第二条路,
+  // 和"已关注""刷新"那几项一样 —— 桌面上重复出现本来就是这个菜单的惯例。
+  addItem("/rabbit_head.png", t("tab_acg"), () => navigate("#/acg"));
 
   // 手机上的底部条只放 5 个主入口,其余的(已关注/刷新/外观/语言)都收在这儿。
   // 桌面上这些在左侧导航里也有 —— 重复但无害,而且当快捷入口挺方便。
@@ -2006,6 +2018,34 @@ function renderLoginScreen(me) {
 // 大屏幕上它是隐藏的 —— 那边有竖栏,不需要再来一个。
 const navMenuEl = document.getElementById("navmenu");
 
+// 当前分区该有哪些导航项 —— **竖栏和手机的 ▾ 下拉共用这一份**。
+//
+// ⚠️ 以前是各写一遍的,于是跑偏了:兔子洞里竖栏是「返回主站 / 兔子洞 / 标签」,
+// 而手机的 ▾ 下拉还在列主站那六个。表现是:手机上进了洞,
+// **既看不到洞里的标签云,菜单里还全是洞外的页面** —— 而且看不出是坏了,
+// 只会觉得"这个菜单怎么点都不对"。
+//
+// 两处各写一遍,就一定会一边改了另一边没改。抽成一份之后,加/删导航项只改这里。
+function navItems() {
+  if (acgZone) {
+    // 第一项是**回主站**。放在第一项是有意的:进了洞之后,"出去"是这个站里
+    // 最基本的动作 —— 只靠浏览器后退键的话,很多人根本想不到。
+    // (tab 传 null:它不是一个"当前页",不该有高亮态。)
+    return [
+      { icon: "arrowLeft", label: t("acg_back"), tab: null,
+        pick: () => navigate("#/recommend") },
+      { icon: "/rabbit_head.png", label: t("tab_acg"), tab: "acg",
+        pick: () => navigate("#/acg") },
+      { icon: "tag", label: t("acg_tags"), tab: "acg-tags",
+        pick: () => navigate("#/acg/tags") },
+    ];
+  }
+  return NAV.map(([tab, labelKey, iconKey]) => ({
+    icon: iconKey, label: t(labelKey), tab,
+    pick: () => navigate("#/" + tab),
+  }));
+}
+
 function renderNavMenu() {
   navMenuEl.replaceChildren();
 
@@ -2016,14 +2056,23 @@ function renderNavMenu() {
   wrap.appendChild(btn);
 
   const menu = h("div", "sel-menu");
-  NAV.forEach(([tab, labelKey, iconKey]) => {
+  navItems().forEach(({ icon, label, pick }) => {
     const item = h("div", "sel-item");
-    item.appendChild(iconSpan(iconKey, 16));
-    item.appendChild(h("span", null, t(labelKey)));
+    // 和 railButton / 菜单项同一个约定:以 / 开头是图片路径
+    if (icon.charAt(0) === "/") {
+      const im = document.createElement("img");
+      im.src = icon;
+      im.alt = "";
+      im.className = "menu-img";
+      item.appendChild(im);
+    } else {
+      item.appendChild(iconSpan(icon, 16));
+    }
+    item.appendChild(h("span", null, label));
     item.onclick = (e) => {
       e.stopPropagation();
       wrap.classList.remove("open");
-      navigate("#/" + tab);
+      pick();
     };
     menu.appendChild(item);
   });
