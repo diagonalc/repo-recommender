@@ -1,13 +1,15 @@
 # Observatory
 
-[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-8b5cf6)](https://deepwiki.com/diagonalc/repo-recommender)
-<!-- ↑ 官方那张 https://deepwiki.com/badge.svg 目前**加载不出来**:
-     deepwiki.com 前面挡着 Vercel 的机器人风控,对非浏览器请求一律回 429 + 一个
-     "请完成验证"的页面 —— 而 <img> 跑不了 JS、过不去验证,
+[![Ask DeepWiki](./web/badge.svg)](https://deepwiki.com/diagonalc/repo-recommender)
+<!-- ↑ 用的是**仓库里自己那份** web/badge.svg,不直连 deepwiki.com。
+
+     为什么不能直连(原来写的是 `https://deepwiki.com/badge.svg`):
+     deepwiki.com 前面挡着 Vercel 的机器人风控,对非浏览器请求一律回
+     429 + 一个"请完成验证"的 HTML 页面 —— 而 **<img> 标签跑不了 JS,过不去验证**;
      GitHub 渲染外链图片走的也是它自己的代理,一样过不去。
-     (实测:不走代理 / 装成浏览器 / 连试三次,全是 429;而 shields.io 是 200。)
-     所以改用 shields.io 的静态徽章,链接照样指向 DeepWiki 那个页面。
-     哪天官方那张能用了(比如风控松了),把上面这行换回去就行。 -->
+     (实测:不走代理 / 装成浏览器 / 连试三次,全是 429;shields.io 对照是 200。)
+     所以官方 SVG 是**用浏览器打开、过了验证之后另存的**,放进了仓库 ——
+     这样跟着仓库走,不求人,也不受那边风控影响。 -->
 
 
 记录你 star 过什么、对什么感兴趣,每天从"正在涨"的仓库里挑出对你口味的推给你。
