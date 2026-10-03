@@ -225,13 +225,9 @@
   }
   .rail-brand .ico { flex: 0 0 28px; width: 28px; height: 28px; }
   .rail-brand .ico svg { width: 28px; height: 28px; display: block; }
-  /* 站名用花体。字号从 16 降到 15:手写体比无衬线体**宽得多**,
-     而竖栏展开只有 176px(站名从 44px 开始,可用 132px)——
-     "Observatory" 用 16px 花体大概率会顶出去,15px 留点余量。 */
-  .rail-brand .rail-label {
-    left: 44px; font-size: 17px; font-weight: 700;
-    font-family: var(--font-fancy);
-  }
+  /* 主站站名:**原来的字体**(无衬线)。花体试过,退回来了 ——
+     和页面标题一个道理:花体适合当装饰,标在导航上既不好认也显得吵。 */
+  .rail-brand .rail-label { left: 44px; font-size: 16px; font-weight: 700; }
 
   /* 进了兔子洞:站标(角色图)放大到 72px。
      ⚠️ 竖栏必须跟着加宽,而且**收起状态也要宽** ——
@@ -241,9 +237,11 @@
   body.acg .rail-brand .ico { flex: 0 0 72px; width: 72px; height: 72px; }
   body.acg .rail-brand .brand-img { width: 72px; height: 72px; }
   /* 洞里竖栏宽得多(268px),站标也大 —— 站名跟着放大一号才配得上。
-     可用宽度 268 - 86 = 182px,19px 花体的 "Observatory" 约 130px,放得下。
-     (⚠️ 这是估算 —— 花体比常规体宽得多,顶出去了就把这个数往下调两号。) */
-  body.acg .rail-brand .rail-label { left: 86px; font-size: 19px; }
+     ⚠️ 花体**只在这里**(兔子洞)。主站那边已经退回原来的无衬线体了 ——
+     导航上的字要好认,花体适合当日首标题那样的装饰。 */
+  body.acg .rail-brand .rail-label {
+    left: 86px; font-size: 19px; font-family: var(--font-fancy);
+  }
 
   /* 花体**只用在兔子洞的页首标题**(那句 "rabbit holeによっこそ")。
      主站的页面标题保持原样:那些标题是"为你推荐""已收藏""标签"这类中文,
