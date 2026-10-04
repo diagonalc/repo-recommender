@@ -171,10 +171,14 @@ def recommend_for(conn, user_id, n=20, offset=0, sort="similarity"):
     my_pos = [pos[r] for r in positive if r in pos]
     if not my_pos:
         # 新用户一定会撞上这条 —— 提示要面向网页用户,别丢一句命令行脚本给他。
-        # 注意:别在这里承诺"会自动同步 star" —— 现在已经会了(sync_all.py),
-        # 但同步是每天跑一次,刚登录的人还是可能还没有数据。
-        raise RuntimeError("还没有你的口味数据。等每日同步跑一次,"
-                           "或先去 Trending 页点几个[感兴趣]试试")
+        #
+        # 现在**登录时会自动在后台同步** star(见 api.sync_user_in_background),
+        # 所以大多数人只会短暂看到这条。两种可能都要说清楚:
+        #   · 刚登录 → 同步还在后台跑,等一会儿刷新
+        #   · 没登录、或 star 太少 → 去点几个"感兴趣"也能起步
+        raise RuntimeError("还没有你的口味数据。刚登录的话,"
+                           "系统正在后台同步你的 star,过一会儿刷新看看;"
+                           "也可以先去 Trending 页点几个[感兴趣]试试")
 
     my_ids = [ids[i] for i in my_pos]
 

@@ -158,54 +158,78 @@ def build_map(matrix, ids):
     return len(points)
 
 
-def main():
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LIMIT
+def rebuild(limit=DEFAULT_LIMIT, conn=None, quiet=False):
+    """重跑一遍向量缓存。返回 (repo 个数, 词表大小)。
 
-    conn = db.get_conn()
-    readmes = db.readme_map(conn)
-    rows = conn.execute(
-        "SELECT id, full_name, description, topics FROM repos "
-        "ORDER BY stargazers_count DESC LIMIT ?", (limit,)).fetchall()
-    if not rows:
-        print("repos 表是空的,先跑 daily_update.py 或 load_raw.py")
-        return
+    **抽成函数是为了让别的地方也能调** —— 原来它只能在命令行跑,
+    于是"什么时候该重建"全靠人记得。而实际有三个地方会改 repos 表:
 
-    with_readme = sum(1 for r in rows if readmes.get(r["id"]))
-    print(f"对 {len(rows)} 个 repo 建向量(库里共 {db.count_repos(conn)} 个,"
-          f"其中 {with_readme} 个有 README)")
+        · daily_update   每天刷新的榜单
+        · sync_stars     把某个用户 star 的仓库并进来(登录时/每日任务里)
+        · 全站搜索       并进来搜到的新仓库
 
-    t0 = time.time()
-    ids = [r["id"] for r in rows]
-    texts = [build_text(r, readmes.get(r["id"], "")) for r in rows]
+    **任何一个改了 repos 而不重建,那些新仓库就没有向量** ——
+    表现是"推荐里永远匹配不到它们"。对新用户尤其致命:
+    他 star 的往往是些我们没爬过的小仓库,一个都认不出来,
+    推荐页就直接报"还没有你的口味数据"。
+    """
+    def say(*args):
+        if not quiet:
+            print(*args)
 
-    # norm='l2' 是默认值:每行向量归一化成单位长度。
-    # 这样"余弦相似度"就等于"点积",后面算相似度直接矩阵相乘,又快又简单。
-    vec = TfidfVectorizer(tokenizer=tokenize, token_pattern=None,
-                          lowercase=False, min_df=MIN_DF)
-    matrix = vec.fit_transform(texts)
+    own_conn = conn is None
+    if own_conn:
+        conn = db.get_conn()
+    try:
+        readmes = db.readme_map(conn)
+        rows = conn.execute(
+            "SELECT id, full_name, description, topics FROM repos "
+            "ORDER BY stargazers_count DESC LIMIT ?", (limit,)).fetchall()
+        if not rows:
+            say("repos 表是空的,先跑 daily_update.py 或 load_raw.py")
+            return 0, 0
 
-    print(f"向量矩阵:{matrix.shape[0]} 个 repo × {matrix.shape[1]} 个词")
-    print(f"非零元素 {matrix.nnz} 个 —— 稀疏度 "
-          f"{matrix.nnz / (matrix.shape[0] * matrix.shape[1]):.3%}"
-          f"(所以必须用稀疏矩阵存,普通二维数组会撑爆内存)")
-    print(f"耗时 {time.time() - t0:.1f} 秒")
+        with_readme = sum(1 for r in rows if readmes.get(r["id"]))
+        say(f"对 {len(rows)} 个 repo 建向量(库里共 {db.count_repos(conn)} 个,"
+            f"其中 {with_readme} 个有 README)")
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    sparse.save_npz(MATRIX_PATH, matrix)
-    with open(META_PATH, "w", encoding="utf-8") as f:
-        json.dump({
-            "repo_ids": ids,
-            "limit": limit,
-            "vocab_size": matrix.shape[1],
-            "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }, f)
-    print(f"缓存写入 {MATRIX_PATH}")
+        t0 = time.time()
+        ids = [r["id"] for r in rows]
+        texts = [build_text(r, readmes.get(r["id"], "")) for r in rows]
+
+        # norm='l2' 是默认值:每行向量归一化成单位长度。
+        # 这样"余弦相似度"就等于"点积",后面算相似度直接矩阵相乘,又快又简单。
+        vec = TfidfVectorizer(tokenizer=tokenize, token_pattern=None,
+                              lowercase=False, min_df=MIN_DF)
+        matrix = vec.fit_transform(texts)
+        say(f"向量矩阵:{matrix.shape[0]} 个 repo × {matrix.shape[1]} 个词,"
+            f"耗时 {time.time() - t0:.1f} 秒")
+
+        os.makedirs(DATA_DIR, exist_ok=True)
+        sparse.save_npz(MATRIX_PATH, matrix)
+        with open(META_PATH, "w", encoding="utf-8") as f:
+            json.dump({
+                "repo_ids": ids,
+                "limit": limit,
+                "vocab_size": matrix.shape[1],
+                "built_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"),
+            }, f)
+        say(f"缓存写入 {MATRIX_PATH}")
+        return len(rows), matrix.shape[1]
+    finally:
+        if own_conn:
+            conn.close()
 
     # (以前这里会顺手算一遍"口味地图"的二维坐标 —— 那个功能撤掉了,
     #  理由见 DEVLOG 的"搁置的想法:口味地图"。
-    #  build_map() 本身留着,想复活的话把下面这行加回来就行:
-    #      build_map(matrix, ids)
+    #  build_map() 本身留着,想复活的话在 rebuild() 末尾加回来就行,
     #  但注意它要 20 秒,别在没用到的时候白跑。)
+
+
+def main():
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LIMIT
+    rebuild(limit)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import heapq
 import json
 import os
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -175,6 +176,114 @@ def health():
     return out
 
 
+# ---------------- 向量缓存:什么时候需要重建 ----------------
+
+# 重建是**全局**操作(整个缓存重算一遍),两个用户同时登录不该各跑一遍。
+_features_lock = threading.Lock()
+
+
+def rebuild_features_if_needed(conn, user_id):
+    """这个人的 star 在向量缓存里**一个都没有** → 重建一次。
+
+    为什么必须做:
+      同步只是把仓库写进 `repos` 表,而推荐用的是**离线算好的 TF-IDF 向量缓存**。
+      新用户的 star 往往是些我们没爬过的小仓库,缓存里一个都对不上 ——
+      于是 recommend.py 认为"你没有口味数据",推荐页直接是空的。
+      (这不是猜的:实测一个新用户 4 个 star,在缓存里命中 **0** 个。)
+
+    为什么用"一个都没有"当阈值:
+      完全对不上才是真坏(推荐直接报错);部分对不上只是推荐质量打点折,
+      还不值得为它触发一次几秒钟的全量重建。
+
+    为什么加锁 + 二次检查:
+      重建是全局的。两个人同时登录时,第一个人重建完就已经覆盖了第二个人 ——
+      第二个不该再跑一遍。所以拿到锁后**再查一次**。
+    """
+    import features
+
+    def covered():
+        try:
+            _matrix, ids = features.load_features()
+        except SystemExit:          # 缓存文件还不存在
+            return False
+        known = set(ids)
+        return any(r in known for r in db.starred_repo_ids(conn, user_id))
+
+    if covered():
+        return
+    with _features_lock:
+        if covered():               # 刚才可能已经有人重建过了
+            return
+        print(f"[sync] user_id={user_id} 的 star 不在向量缓存里,重建一遍…")
+        features.rebuild(conn=conn, quiet=True)
+
+
+# ---------------- 登录后自动同步 ----------------
+
+# 正在后台同步的人。用来防止同一个人被重复同步 ——
+# 比如连点两次登录,或者登录时正好撞上每日任务那一轮。
+_syncing = set()
+_syncing_lock = threading.Lock()
+
+
+def sync_user_in_background(user_id):
+    """登录后,在**后台线程**里把这个人的 star / 关注拉一遍。
+
+    为什么必须放后台、不能在回调里等着:
+      OAuth 回调是**浏览器在等**的那个请求。而拉 star 要翻好几页、
+      每页之间还要 sleep 1 秒 —— 一个人几百个 star 就是十几秒。
+      放在回调里等着,用户看到的就是"点了登录,转半天圈"。
+
+    为什么值得做:
+      不做的话,**新登录的人推荐页是空的** —— 因为推荐的口味信号就是 star。
+      而他看到的提示是"还没有你的口味数据",看起来像这站坏了,
+      实际只是"要等到明天定时任务跑"。这是最能劝退人的一种体验。
+
+    幂等:sync_stars / sync_following 内部都是 upsert,
+    重复跑不会产生重复数据 —— 所以"每次登录都同步一遍"是安全的。
+    """
+    with _syncing_lock:
+        if user_id in _syncing:
+            return False          # 这个人的同步已经在跑了,别叠
+        _syncing.add(user_id)
+
+    def work():
+        # ⚠️ 每个线程开**自己的**数据库连接。
+        # SQLite 的连接不是线程安全的,几个线程共用一个 conn 会出各种
+        # 诡异且难复现的错。而且连接的创建开销很小,不值得为它冒险。
+        #
+        # 也**不调 init_db** —— 那是写操作(可能重建表),
+        # 在后台线程里撞上正在服务的请求会把库锁住。
+        # 服务启动时已经建过表了,这里不需要。
+        conn = None
+        try:
+            import sync_following
+            import sync_stars
+            conn = db.get_conn()
+            for mod in (sync_stars, sync_following):
+                try:
+                    mod.sync_user(conn, user_id, quiet=True)
+                except Exception as e:              # noqa: BLE001
+                    # 一个人同步失败不该炸掉这个线程,也不该影响登录本身
+                    print(f"[sync] user_id={user_id} {mod.__name__} 失败:"
+                          f"{type(e).__name__}: {e}")
+            # 同步只是把仓库写进 repos 表;推荐要的是**向量缓存**。
+            # 新用户的 star 多半不在缓存里,不重建的话推荐页还是空的。
+            rebuild_features_if_needed(conn, user_id)
+            print(f"[sync] user_id={user_id} 登录后同步完成")
+        except Exception as e:                      # noqa: BLE001
+            print(f"[sync] user_id={user_id} 同步异常:{type(e).__name__}: {e}")
+        finally:
+            if conn is not None:
+                conn.close()
+            with _syncing_lock:
+                _syncing.discard(user_id)
+
+    # daemon=True:服务退出时这个线程跟着走,不会把它拖住
+    threading.Thread(target=work, daemon=True, name=f"sync-{user_id}").start()
+    return True
+
+
 # ---------------- 登录 ----------------
 
 @app.get("/auth/login")
@@ -227,6 +336,10 @@ def auth_callback(request: Request, code: str = None, state: str = None,
 
     user_id, _is_new = db.upsert_user(conn, gh)
     sid = db.create_session(conn, user_id)
+
+    # 在后台把这个人的 star / 关注拉一遍 —— 不阻塞这次跳转。
+    # 新用户的第一屏推荐就靠它,不然要等到明天的定时任务才有数据。
+    sync_user_in_background(user_id)
 
     resp = RedirectResponse("/")
     resp.set_cookie(COOKIE, sid, httponly=True, samesite="lax",

@@ -18,6 +18,27 @@ PORT=18080
 REPOS_PUBLIC_BASE="${REPOS_PUBLIC_BASE:-}"
 export REPOS_PUBLIC_BASE
 
+# ---------- 出网方式:直连,还是走代理 ----------
+#
+# **为什么必须在这儿写死**:进程的环境变量在**启动那一刻**就固定了 ——
+# 你在外面把代理关掉,服务是不知道的。它会继续往那个已经不存在的端口发请求,
+# 结果就是"登录卡住 → 502"。
+#
+# 这个坑特别隐蔽:**本机 /api/health 照常 200**,页面也照样打开,
+# 只有**需要出网的功能全废** —— 登录、点 star、全站搜索、抓 README、头像代理、翻译。
+# 看起来像"某个功能坏了",实际是"整条出网链路断了"。
+#
+# 想走代理就传:REPOS_HTTP_PROXY=http://127.0.0.1:7897 ./run_server.sh
+# 不传 = 直连(当前 GitHub 从这台机器直连只要 0.1~0.2 秒,够用)。
+HTTP_PROXY_CFG="${REPOS_HTTP_PROXY:-}"
+if [ -n "$HTTP_PROXY_CFG" ]; then
+  export http_proxy="$HTTP_PROXY_CFG" https_proxy="$HTTP_PROXY_CFG"
+  export HTTP_PROXY="$HTTP_PROXY_CFG" HTTPS_PROXY="$HTTP_PROXY_CFG"
+else
+  # 显式清掉 —— 别让 shell 里飘着的代理变量偷偷影响这个服务
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+fi
+
 cd /home/diagonalc/repo-recommender || exit 1
 mkdir -p logs
 
@@ -26,6 +47,12 @@ if [ -n "$REPOS_PUBLIC_BASE" ]; then
   echo "公开地址:  $REPOS_PUBLIC_BASE/"
 else
   echo "公开地址:  (未设置 —— 本地模式)"
+fi
+# 把出网方式也打出来 —— 登录 / 搜索 / 抓 README 全靠它,出问题第一个要看这里
+if [ -n "$HTTP_PROXY_CFG" ]; then
+  echo "出网方式:  走代理 $HTTP_PROXY_CFG"
+else
+  echo "出网方式:  直连"
 fi
 
 # --proxy-headers       让 uvicorn 相信反向代理给的 X-Forwarded-* 头
