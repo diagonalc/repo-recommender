@@ -182,9 +182,21 @@ def rebuild(limit=DEFAULT_LIMIT, conn=None, quiet=False):
         conn = db.get_conn()
     try:
         readmes = db.readme_map(conn)
+        # 取「star 前 N 名」**∪**「任何人 star 过的仓库」。
+        #
+        # 为什么必须并上后面那半:
+        #   推荐是拿**用户的 star** 当锚点的。只按星数取前 N 的话,
+        #   库里的仓库一多,用户的 star 就会被挤出这个名单 ——
+        #   而它们恰恰是唯一有用的那批。
+        #   实测踩过一次:库里仓库从 1640 涨到 6191 之后,站长自己有 2 个 star
+        #   被挤了出去。池子再涨下去,他的 star 会被**全部**挤出去,
+        #   推荐页直接报"还没有你的口味数据" —— 而看起来像"同步坏了"。
         rows = conn.execute(
             "SELECT id, full_name, description, topics FROM repos "
-            "ORDER BY stargazers_count DESC LIMIT ?", (limit,)).fetchall()
+            "WHERE id IN (SELECT id FROM repos ORDER BY stargazers_count "
+            "             DESC LIMIT ?) "
+            "   OR id IN (SELECT DISTINCT repo_id FROM starred) "
+            "ORDER BY stargazers_count DESC", (limit,)).fetchall()
         if not rows:
             say("repos 表是空的,先跑 daily_update.py 或 load_raw.py")
             return 0, 0

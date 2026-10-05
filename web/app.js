@@ -680,11 +680,14 @@ function buildRail() {
   }
   brand.appendChild(bico);
   brand.appendChild(h("span", "rail-label", APP_NAME));
-  brand.onclick = () => navigate("#/recommend");
+  // 站标点一下回"这个分区的首页":主站回推荐页,洞里回洞的列表页。
+  // 洞里那一栏因此不用再列一项"兔子洞" —— 站标就是它。
+  brand.onclick = () => navigate(acgZone ? "#/acg" : "#/recommend");
   railEl.appendChild(brand);
 
   // 竖栏和手机的 ▾ 下拉共用**同一份** navItems() —— 理由见那个函数上面的注释。
-  navItems().forEach(({ icon, label, tab, pick }) => {
+  // 传 false:桌面的站标就相当于"回洞里首页",不用再列一项。
+  navItems(false).forEach(({ icon, label, tab, pick }) => {
     railEl.appendChild(railButton(icon, label, pick, tab));
   });
 
@@ -739,6 +742,17 @@ function showPageBack(show) {
 }
 
 function toggleTag(tag) {
+  // ⚠️ 在兔子洞里点标签,要**留在洞里**。
+  // 卡片上的标签和标签云上的标签都走这个函数,而主站那套会跳到
+  // `#/tag/...` —— 那是**主站**的标签筛选页。于是洞里点一下标签就被弹回主站,
+  // 而且筛选的是全库(几万个仓库),不是洞里那几千个。
+  if (acgZone) {
+    const next = state.acgTags.includes(tag)
+      ? state.acgTags.filter(x => x !== tag)
+      : state.acgTags.concat(tag);
+    navigate(next.length ? acgHash({ tag: next }) : "#/acg");
+    return;
+  }
   if (!state.tags.length) {
     // 记住"从哪儿点进标签的",清空标签后好回去。
     //
@@ -1933,11 +1947,14 @@ async function renderUserMenu() {
     menu.appendChild(item);
   };
 
-  // 兔子洞入口。**这个菜单在手机上是它唯一的入口** ——
-  // 竖栏在窄屏是 display:none,而兔子洞原来只挂在竖栏上,手机上根本够不着。
-  // 桌面上竖栏那个还在(位置本身在说"它是另一个地方"),这里是并存的第二条路,
-  // 和"已关注""刷新"那几项一样 —— 桌面上重复出现本来就是这个菜单的惯例。
-  addItem("/rabbit_head.png", t("tab_acg"), () => navigate("#/acg"));
+  // 兔子洞入口。**只在手机上加**。
+  //
+  // 桌面:竖栏里已经有一个了(位置在"刷新"上面那格,和六个主站频道隔着留白),
+  // 菜单里再来一个是重复 —— 和下面"刷新"那条一样的道理,方向相反而已。
+  // 手机:竖栏是 display:none,**这里就是唯一的入口**,不加就进不去。
+  if (window.innerWidth <= 700) {
+    addItem("/rabbit_head.png", t("tab_acg"), () => navigate("#/acg"));
+  }
 
   // 手机上的底部条只放 5 个主入口,其余的(已关注/刷新/外观/语言)都收在这儿。
   // 桌面上这些在左侧导航里也有 —— 重复但无害,而且当快捷入口挺方便。
@@ -2032,19 +2049,30 @@ const navMenuEl = document.getElementById("navmenu");
 // 只会觉得"这个菜单怎么点都不对"。
 //
 // 两处各写一遍,就一定会一边改了另一边没改。抽成一份之后,加/删导航项只改这里。
-function navItems() {
+// withHome = 要不要列一项"兔子洞(回首页)"。
+//
+// ⚠️ 这个参数是个例外,理由很具体,不是"两边各写一套":
+//   桌面的竖栏最上面有个**站标**,点它就回洞里的首页 ——
+//   那一栏再列一项"兔子洞"就是废话(你本来就在里面)。
+//   而手机上没有竖栏、也就没有站标,下拉里**不列就真的回不去了**:
+//   从"标签"页只能退回主站,再重新进来一次(死路)。
+//   所以不是两边逻辑不一致,是**两边能用的东西不一样**。
+function navItems(withHome) {
   if (acgZone) {
     // 第一项是**回主站**。放在第一项是有意的:进了洞之后,"出去"是这个站里
     // 最基本的动作 —— 只靠浏览器后退键的话,很多人根本想不到。
     // (tab 传 null:它不是一个"当前页",不该有高亮态。)
-    return [
+    const items = [
       { icon: "arrowLeft", label: t("acg_back"), tab: null,
         pick: () => navigate("#/recommend") },
-      { icon: "/rabbit_head.png", label: t("tab_acg"), tab: "acg",
-        pick: () => navigate("#/acg") },
-      { icon: "tag", label: t("acg_tags"), tab: "acg-tags",
-        pick: () => navigate("#/acg/tags") },
     ];
+    if (withHome) {
+      items.push({ icon: "/rabbit_head.png", label: t("tab_acg"), tab: "acg",
+                   pick: () => navigate("#/acg") });
+    }
+    items.push({ icon: "tag", label: t("acg_tags"), tab: "acg-tags",
+                 pick: () => navigate("#/acg/tags") });
+    return items;
   }
   return NAV.map(([tab, labelKey, iconKey]) => ({
     icon: iconKey, label: t(labelKey), tab,
@@ -2062,7 +2090,9 @@ function renderNavMenu() {
   wrap.appendChild(btn);
 
   const menu = h("div", "sel-menu");
-  navItems().forEach(({ icon, label, pick }) => {
+  // 传 true:手机上**没有站标**可以点,所以下拉里必须留着"回洞里首页"那一项,
+  // 否则从标签页就回不到洞里的列表了。
+  navItems(true).forEach(({ icon, label, pick }) => {
     const item = h("div", "sel-item");
     // 和 railButton / 菜单项同一个约定:以 / 开头是图片路径
     if (icon.charAt(0) === "/") {
