@@ -1349,7 +1349,13 @@ function searchBar() {
     state.scope,
     (v) => {
       state.scope = v;
-      if (state.q) navigate(searchHash(state.q, v));
+      // ⚠️ **不管有没有搜索词都要 navigate。**
+      // 原来是 `if (state.q) navigate(...)` —— 搜索框还空着的时候选这个下拉,
+      // 就只改了个内存变量、什么都不发生。
+      // 而 makeSelect 是按**创建时**的 value 渲染按钮文字的,
+      // 不触发一次重渲染,按钮上永远显示旧的那个 —— 用户看到的就是"点了没反应"。
+      // (goSearch 是唯一入口,重渲染的活儿交给它。)
+      navigate(searchHash(state.q, v));
     });
 
   const go = h("button", "btn primary", t("search_go"));

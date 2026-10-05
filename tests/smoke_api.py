@@ -164,6 +164,10 @@ def main():
     call("GET", "/api/search?q=react")
     call("GET", "/api/search?q=")
     call("GET", "/api/search")                       # 缺参数
+    # ⚠️ 这条以前漏了。而它是最容易坏的一条 —— 它要**真的去打 GitHub**,
+    # 走的是服务进程的出网链路(代理/直连、限流)。
+    # 漏测的后果:前端"全 GitHub"那个选项点了没反应,而这里一片绿。
+    call("GET", "/api/search?q=music&scope=github&limit=3")
 
     print("\n【搜索排序】")
     for s in ("relevance", "stars", "name", "pushed"):
